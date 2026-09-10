@@ -1,12 +1,9 @@
-# backend/config/database.py
-
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
     AsyncSession,
     async_sessionmaker,
 )
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import event
 from config.settings import settings
 import structlog
 
@@ -33,6 +30,11 @@ if not is_sqlite:
         "pool_timeout": settings.DB_POOL_TIMEOUT,
         "pool_pre_ping": True,
         "pool_recycle": 3600,
+        # Disable prepared statement caching for Supabase / PgBouncer compatibility
+        "connect_args": {
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+        },
     })
 
 engine = create_async_engine(settings.DATABASE_URL, **engine_kwargs)
