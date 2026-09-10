@@ -1,0 +1,14 @@
+// backend/data/states_districts.json
+{
+    "states": [
+        "andhra_pradesh", "arunachal_pradesh", "assam", "bihar",
+        "chhattisgarh", "goa", "gujarat", "haryana", "himachal_pradesh",
+        "jharkhand", "karnataka", "kerala", "madhya_pradesh",
+        "maharashtra", "manipur", "meghalaya", "mizoram", "nagaland",
+        "odisha", "punjab", "rajasthan", "sikkim", "tamil_nadu",
+        "telangana", "tripura", "uttar_pradesh", "uttarakhand",
+        "west_bengal", "delhi", "chandigarh", "puducherry",
+        "jammu_kashmir", "ladakh", "andaman_nicobar", "dadra_nagar_haveli",
+        "lakshadweep"
+    ]
+}

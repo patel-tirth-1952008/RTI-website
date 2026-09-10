@@ -1,0 +1,202 @@
+{
+    "category_to_department": {
+        "road_repair": {
+            "default": "municipal_corporation",
+            "state_highway": "pwd",
+            "national_highway": "nhai",
+            "rural": "panchayat",
+            "cantonment": "cantonment_board"
+        },
+        "water_supply": {
+            "default": "water_board",
+            "rural": "panchayat"
+        },
+        "electricity": {
+            "default": "electricity_board"
+        },
+        "sanitation": {
+            "default": "municipal_corporation",
+            "rural": "panchayat"
+        },
+        "education": {
+            "default": "education_department"
+        },
+        "healthcare": {
+            "default": "health_department"
+        },
+        "corruption": {
+            "default": "general"
+        },
+        "government_scheme": {
+            "default": "general"
+        },
+        "land_records": {
+            "default": "revenue_department"
+        },
+        "police": {
+            "default": "police_department"
+        },
+        "environment": {
+            "default": "municipal_corporation"
+        },
+        "public_transport": {
+            "default": "municipal_corporation"
+        },
+        "general": {
+            "default": "general"
+        }
+    },
+    "state_departments": {
+        "maharashtra": {
+            "municipal_corporation": {
+                "mumbai": "Brihanmumbai Municipal Corporation (BMC)",
+                "pune": "Pune Municipal Corporation (PMC)",
+                "nagpur": "Nagpur Municipal Corporation (NMC)",
+                "nashik": "Nashik Municipal Corporation",
+                "thane": "Thane Municipal Corporation",
+                "navi mumbai": "Navi Mumbai Municipal Corporation (NMMC)",
+                "default": "Municipal Corporation"
+            },
+            "pwd": "Maharashtra Public Works Department (PWD)",
+            "water_board": "Maharashtra Water Supply and Sewerage Board (MWSSB)",
+            "electricity_board": "Maharashtra State Electricity Distribution Company Ltd (MSEDCL)"
+        },
+        "delhi": {
+            "municipal_corporation": {
+                "default": "Municipal Corporation of Delhi (MCD)"
+            },
+            "pwd": "Delhi Public Works Department (PWD)",
+            "water_board": "Delhi Jal Board (DJB)",
+            "electricity_board": "BSES / Tata Power Delhi Distribution Ltd"
+        },
+        "karnataka": {
+            "municipal_corporation": {
+                "bengaluru": "Bruhat Bengaluru Mahanagara Palike (BBMP)",
+                "mysuru": "Mysuru City Corporation",
+                "default": "Municipal Corporation"
+            },
+            "pwd": "Karnataka Public Works Department",
+            "water_board": "Bangalore Water Supply and Sewerage Board (BWSSB)",
+            "electricity_board": "BESCOM / HESCOM / CESCOM"
+        },
+        "tamil_nadu": {
+            "municipal_corporation": {
+                "chennai": "Greater Chennai Corporation (GCC)",
+                "coimbatore": "Coimbatore Corporation",
+                "madurai": "Madurai Corporation",
+                "default": "Municipal Corporation"
+            },
+            "pwd": "Tamil Nadu Public Works Department",
+            "water_board": "Chennai Metropolitan Water Supply and Sewerage Board (CMWSSB)",
+            "electricity_board": "Tamil Nadu Generation and Distribution Corporation (TANGEDCO)"
+        },
+        "uttar_pradesh": {
+            "municipal_corporation": {
+                "lucknow": "Lucknow Municipal Corporation (Nagar Nigam)",
+                "kanpur": "Kanpur Municipal Corporation",
+                "varanasi": "Varanasi Municipal Corporation",
+                "agra": "Agra Municipal Corporation",
+                "noida": "Noida Authority",
+                "ghaziabad": "Ghaziabad Municipal Corporation",
+                "default": "Nagar Nigam"
+            },
+            "pwd": "Uttar Pradesh Public Works Department (PWD)",
+            "water_board": "Uttar Pradesh Jal Nigam",
+            "electricity_board": "UPPCL / DVVNL / PVVNL"
+        },
+        "rajasthan": {
+            "municipal_corporation": {
+                "jaipur": "Jaipur Municipal Corporation (JMC)",
+                "jodhpur": "Jodhpur Municipal Corporation",
+                "default": "Municipal Corporation / Nagar Parishad"
+            },
+            "pwd": "Rajasthan Public Works Department",
+            "water_board": "Public Health Engineering Department (PHED)",
+            "electricity_board": "Jaipur Vidyut Vitran Nigam Limited (JVVNL)"
+        },
+        "gujarat": {
+            "municipal_corporation": {
+                "ahmedabad": "Ahmedabad Municipal Corporation (AMC)",
+                "surat": "Surat Municipal Corporation (SMC)",
+                "vadodara": "Vadodara Municipal Corporation (VMC)",
+                "rajkot": "Rajkot Municipal Corporation (RMC)",
+                "default": "Municipal Corporation"
+            },
+            "pwd": "Gujarat Roads and Buildings Department",
+            "water_board": "Gujarat Water Supply and Sewerage Board (GWSSB)",
+            "electricity_board": "UGVCL / PGVCL / DGVCL / MGVCL"
+        },
+        "west_bengal": {
+            "municipal_corporation": {
+                "kolkata": "Kolkata Municipal Corporation (KMC)",
+                "default": "Municipal Corporation"
+            },
+            "pwd": "West Bengal Public Works Department",
+            "water_board": "Kolkata Metropolitan Water and Sanitation Authority",
+            "electricity_board": "West Bengal State Electricity Distribution Company (WBSEDCL)"
+        },
+        "madhya_pradesh": {
+            "municipal_corporation": {
+                "bhopal": "Bhopal Municipal Corporation (BMC)",
+                "indore": "Indore Municipal Corporation (IMC)",
+                "default": "Nagar Nigam"
+            },
+            "pwd": "Madhya Pradesh Public Works Department",
+            "electricity_board": "Madhya Pradesh Paschim Kshetra Vidyut Vitran Company"
+        },
+        "andhra_pradesh": {
+            "municipal_corporation": {
+                "visakhapatnam": "Greater Visakhapatnam Municipal Corporation (GVMC)",
+                "vijayawada": "Vijayawada Municipal Corporation (VMC)",
+                "default": "Municipal Corporation"
+            },
+            "pwd": "Andhra Pradesh Roads and Buildings Department"
+        },
+        "telangana": {
+            "municipal_corporation": {
+                "hyderabad": "Greater Hyderabad Municipal Corporation (GHMC)",
+                "default": "Municipal Corporation"
+            },
+            "pwd": "Telangana Roads and Buildings Department",
+            "water_board": "Hyderabad Metropolitan Water Supply and Sewerage Board (HMWSSB)",
+            "electricity_board": "Telangana State Southern Power Distribution Company (TSSPDCL)"
+        },
+        "kerala": {
+            "municipal_corporation": {
+                "thiruvananthapuram": "Thiruvananthapuram Corporation",
+                "kochi": "Kochi Corporation",
+                "default": "Municipal Corporation"
+            },
+            "pwd": "Kerala Public Works Department",
+            "water_board": "Kerala Water Authority (KWA)",
+            "electricity_board": "Kerala State Electricity Board (KSEB)"
+        },
+        "punjab": {
+            "municipal_corporation": {
+                "chandigarh": "Municipal Corporation Chandigarh",
+                "ludhiana": "Municipal Corporation Ludhiana",
+                "amritsar": "Municipal Corporation Amritsar",
+                "default": "Municipal Corporation / Nagar Nigam"
+            },
+            "pwd": "Punjab Public Works Department (B&R)",
+            "electricity_board": "Punjab State Power Corporation Limited (PSPCL)"
+        },
+        "haryana": {
+            "municipal_corporation": {
+                "gurugram": "Municipal Corporation of Gurugram (MCG)",
+                "faridabad": "Municipal Corporation Faridabad",
+                "default": "Municipal Corporation"
+            },
+            "pwd": "Haryana Public Works Department (B&R)",
+            "electricity_board": "Dakshin Haryana Bijli Vitran Nigam (DHBVN) / UHBVN"
+        },
+        "bihar": {
+            "municipal_corporation": {
+                "patna": "Patna Municipal Corporation (PMC)",
+                "default": "Nagar Nigam"
+            },
+            "pwd": "Bihar Road Construction Department",
+            "electricity_board": "South Bihar Power Distribution Company (SBPDCL)"
+        }
+    }
+}

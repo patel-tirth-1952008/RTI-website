@@ -1,0 +1,56 @@
+// backend/data/pio_directory.json
+{
+    "_comment": "This directory will grow over time. Initially minimal data.",
+    "delhi": {
+        "municipal_corporation": {
+            "default": {
+                "name": "The Central Public Information Officer (CPIO)",
+                "address": "Municipal Corporation of Delhi, Town Hall, Chandni Chowk, Delhi - 110006",
+                "email": "",
+                "phone": ""
+            }
+        },
+        "pwd": {
+            "default": {
+                "name": "The Public Information Officer",
+                "address": "Public Works Department, MSO Building, I.P. Estate, New Delhi - 110002",
+                "email": "",
+                "phone": ""
+            }
+        },
+        "water_board": {
+            "default": {
+                "name": "The Public Information Officer",
+                "address": "Delhi Jal Board, Varunalaya Phase-II, Karol Bagh, New Delhi - 110005",
+                "email": "",
+                "phone": ""
+            }
+        }
+    },
+    "maharashtra": {
+        "municipal_corporation": {
+            "mumbai": {
+                "name": "The Municipal Secretary / CPIO",
+                "address": "Brihanmumbai Municipal Corporation, Municipal Head Office, Mahapalika Marg, Fort, Mumbai - 400001",
+                "email": "",
+                "phone": ""
+            },
+            "pune": {
+                "name": "The Public Information Officer",
+                "address": "Pune Municipal Corporation, Shivajinagar, Pune - 411005",
+                "email": "",
+                "phone": ""
+            }
+        }
+    },
+    "karnataka": {
+        "municipal_corporation": {
+            "bengaluru": {
+                "name": "The Public Information Officer",
+                "address": "Bruhat Bengaluru Mahanagara Palike (BBMP), N.R. Square, Bengaluru - 560002",
+                "email": "",
+                "phone": ""
+            }
+        }
+    }
+}
