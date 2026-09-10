@@ -42,6 +42,8 @@ export function PhotoUploader({ onFileSelect, selectedFile, onRemove, fraudScore
     return "border-red-500";
   };
 
+  const dropzoneProps = getRootProps();
+
   return (
     <div className="w-full">
       <AnimatePresence mode="wait">
@@ -81,12 +83,9 @@ export function PhotoUploader({ onFileSelect, selectedFile, onRemove, fraudScore
             </div>
           </motion.div>
         ) : (
-          <motion.div
-            key="dropzone"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            {...getRootProps()}
+          <div
+            onClick={dropzoneProps.onClick}
+            onKeyDown={dropzoneProps.onKeyDown}
             className={cn(
               "border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all",
               isDragActive
@@ -95,10 +94,7 @@ export function PhotoUploader({ onFileSelect, selectedFile, onRemove, fraudScore
             )}
           >
             <input {...getInputProps()} />
-            <motion.div
-              animate={isDragActive ? { scale: 1.1 } : { scale: 1 }}
-              className="flex flex-col items-center gap-4"
-            >
+            <div className="flex flex-col items-center gap-4">
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500/20 to-purple-500/20 flex items-center justify-center">
                 {isDragActive ? (
                   <Upload className="w-8 h-8 text-blue-400" />
@@ -118,8 +114,8 @@ export function PhotoUploader({ onFileSelect, selectedFile, onRemove, fraudScore
                 <ImageIcon className="w-3 h-3" />
                 <span>AI will analyze the image for authenticity & issue type</span>
               </div>
-            </motion.div>
-          </motion.div>
+            </div>
+          </div>
         )}
       </AnimatePresence>
     </div>
