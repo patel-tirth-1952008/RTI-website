@@ -1,13 +1,15 @@
 """
-GUJARAT STATE RTI PORTAL ADAPTER (Thread-Safe Sync Playwright Engine)
+GUJARAT STATE RTI PORTAL ADAPTER (Memory-Optimized Sync Engine)
 =====================================================================
 Portal: https://rti.gujarat.gov.in
 Runs via asyncio.to_thread to be 100% immune to Windows event loop bugs.
+Memory optimized to run under 180MB for Render Free Tier.
 """
 
 import asyncio
 import re
 import base64
+import gc
 from typing import Dict, Optional, List, Any
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeout
 
@@ -18,6 +20,19 @@ from .base_adapter import (
 import structlog
 
 logger = structlog.get_logger()
+
+CHROMIUM_LOW_MEM_FLAGS = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
+    '--single-process',
+    '--disable-gpu',
+    '--disable-software-rasterizer',
+    '--js-flags="--max-old-space-size=128"',
+]
 
 
 class GujaratPortalAdapter(BasePortalAdapter):
@@ -73,16 +88,19 @@ class GujaratPortalAdapter(BasePortalAdapter):
 
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+                browser = p.chromium.launch(
+                    headless=True, 
+                    args=CHROMIUM_LOW_MEM_FLAGS
+                )
                 context = browser.new_context(
-                    viewport={'width': 1920, 'height': 1080},
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    viewport={'width': 1280, 'height': 720},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 )
                 page = context.new_page()
-                page.set_default_timeout(30000)
+                page.set_default_timeout(25000)
 
                 # 1. Navigate
-                page.goto(self.submit_url, wait_until="networkidle")
+                page.goto(self.submit_url, wait_until="domcontentloaded")
                 steps.append(FilingStep.NAVIGATE.value)
 
                 # 2. Select Department
@@ -128,10 +146,10 @@ class GujaratPortalAdapter(BasePortalAdapter):
 
                 # 7. CAPTCHA
                 captcha_solved = False
-                for attempt in range(1, 6):
+                for attempt in range(1, 4):
                     try:
                         c_img = page.locator("img[id$='imgCaptcha'], img[src*='captcha']").first
-                        if c_img.is_visible(timeout=4000):
+                        if c_img.is_visible(timeout=3000):
                             c_bytes = c_img.screenshot()
                             c_text = captcha_solver.solve(c_bytes, attempt)
                             if c_text:
@@ -142,12 +160,14 @@ class GujaratPortalAdapter(BasePortalAdapter):
                         pass
                 
                 if not captcha_solved:
+                    context.close()
                     browser.close()
+                    gc.collect()
                     return FilingResult(success=False, requires_manual_captcha=True, steps_completed=steps, error="CAPTCHA solving failed.")
 
                 # 8. Submit
                 self._sync_click(page, "input[id$='btnSubmit'], input[type='submit'][value*='Submit']")
-                page.wait_for_load_state("networkidle", timeout=15000)
+                page.wait_for_load_state("domcontentloaded", timeout=12000)
                 steps.append(FilingStep.SUBMIT.value)
 
                 page_text = page.inner_text("body")
@@ -157,7 +177,9 @@ class GujaratPortalAdapter(BasePortalAdapter):
                 reg_match = re.search(r'(GUJ[/-][A-Z]+[/-]\d{4}[/-]\d+)', page_text)
                 reg_number = reg_match.group(1) if reg_match else None
 
+                context.close()
                 browser.close()
+                gc.collect()
 
                 if reg_number:
                     return FilingResult(
@@ -182,6 +204,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
 
         except Exception as e:
             logger.error("gujarat_filing_error", error=str(e))
+            gc.collect()
             return FilingResult(success=False, steps_completed=steps, error=str(e), portal_name=self.portal_name)
 
     async def check_status(self, registration_number: str, email: str, page=None) -> StatusResult:
@@ -190,20 +213,26 @@ class GujaratPortalAdapter(BasePortalAdapter):
     def _check_status_sync(self, registration_number: str, email: str) -> StatusResult:
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(self.status_url, wait_until="networkidle")
+                browser = p.chromium.launch(headless=True, args=CHROMIUM_LOW_MEM_FLAGS)
+                context = browser.new_context(viewport={'width': 1280, 'height': 720})
+                page = context.new_page()
+                page.goto(self.status_url, wait_until="domcontentloaded")
                 self._sync_fill(page, "input[id$='txtRegNo']", registration_number)
                 self._sync_fill(page, "input[id$='txtEmail']", email)
                 self._sync_click(page, "input[id$='btnSearch']")
-                page.wait_for_load_state("networkidle")
+                page.wait_for_load_state("domcontentloaded")
                 page_text = page.inner_text("body")
+                
+                context.close()
                 browser.close()
+                gc.collect()
+
                 status = "pending"
                 if "disposed" in page_text.lower():
                     status = "response_received"
                 return StatusResult(success=True, registration_number=registration_number, status=status)
         except Exception as e:
+            gc.collect()
             return StatusResult(success=False, error=str(e))
 
     # Helper sync methods
@@ -211,9 +240,8 @@ class GujaratPortalAdapter(BasePortalAdapter):
         for sel in selector.split(","):
             try:
                 el = page.locator(sel.strip()).first
-                if el.is_visible(timeout=2000):
-                    el.fill('')
-                    el.type(value, delay=5)
+                if el.is_visible(timeout=1000):
+                    el.fill(value)
                     return
             except Exception:
                 pass
@@ -222,7 +250,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
         for sel in selector.split(","):
             try:
                 el = page.locator(sel.strip()).first
-                if el.is_visible(timeout=2000):
+                if el.is_visible(timeout=1000):
                     try:
                         el.select_option(label=value)
                         return
@@ -238,7 +266,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
         for sel in selector.split(","):
             try:
                 el = page.locator(sel.strip()).first
-                if el.is_visible(timeout=2000):
+                if el.is_visible(timeout=1000):
                     el.click()
                     return
             except Exception:

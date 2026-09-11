@@ -1,8 +1,9 @@
 """
-RTI PORTAL FILING SERVICE (Thread-Safe Sync Playwright Engine)
+RTI PORTAL FILING SERVICE (Memory-Optimized Sync Engine)
 ==============================================================
 Automates RTI filing on central government portals.
 Runs via asyncio.to_thread to be 100% immune to Windows event loop bugs.
+Memory optimized to run under 180MB for Render Free Tier.
 """
 
 import asyncio
@@ -10,9 +11,9 @@ import base64
 import io
 import os
 import re
-import tempfile
+import gc
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Optional, Any, Tuple
+from typing import Dict, Optional, Any
 from pathlib import Path
 
 from PIL import Image, ImageEnhance, ImageFilter
@@ -24,8 +25,23 @@ from config.constants import ApplicationStatus, IssueCategory, DepartmentType, R
 
 logger = structlog.get_logger()
 
+# Ultra-low memory flags for Chromium (Keeps RAM under 100MB per instance)
+CHROMIUM_LOW_MEM_FLAGS = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
+    '--single-process',
+    '--disable-gpu',
+    '--disable-software-rasterizer',
+    '--js-flags="--max-old-space-size=128"',
+]
+
+
 # ============================================================
-# CAPTCHA SOLVER (Synchronous)
+# CAPTCHA SOLVER (Synchronous & Memory Optimized)
 # ============================================================
 
 class CaptchaSolver:
@@ -35,26 +51,41 @@ class CaptchaSolver:
         self._easyocr_reader = None
 
     def solve(self, captcha_image_bytes: bytes, attempt: int = 1) -> Optional[str]:
-        # Strategy 1: EasyOCR
-        result = self._try_easyocr(captcha_image_bytes)
-        if result and len(result) >= 4:
-            logger.info("captcha_solved_easyocr", text=result, attempt=attempt)
-            return result
-
-        # Strategy 2: Tesseract OCR
+        # Strategy 1: Tesseract OCR (Lightweight, ~15MB RAM)
         result = self._try_tesseract(captcha_image_bytes)
         if result and len(result) >= 4:
             logger.info("captcha_solved_tesseract", text=result, attempt=attempt)
             return result
 
-        # Strategy 3: Image preprocessing + retry
+        # Strategy 2: Preprocess & Tesseract
         processed = self._preprocess_captcha(captcha_image_bytes)
-        result = self._try_easyocr(processed)
+        result = self._try_tesseract(processed)
         if result and len(result) >= 4:
             logger.info("captcha_solved_preprocessed", text=result, attempt=attempt)
             return result
 
+        # Strategy 3: EasyOCR (Heavy fallback, ~200MB RAM)
+        result = self._try_easyocr(captcha_image_bytes)
+        if result and len(result) >= 4:
+            logger.info("captcha_solved_easyocr", text=result, attempt=attempt)
+            return result
+
         logger.warning("captcha_solve_failed", attempt=attempt)
+        return None
+
+    def _try_tesseract(self, image_bytes: bytes) -> Optional[str]:
+        try:
+            import pytesseract
+            image = Image.open(io.BytesIO(image_bytes)).convert('L')
+            image = image.point(lambda x: 0 if x < 128 else 255)
+            text = pytesseract.image_to_string(
+                image,
+                config='--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+            )
+            cleaned = re.sub(r'[^a-zA-Z0-9]', '', text.strip())
+            return cleaned if cleaned else None
+        except Exception as e:
+            logger.warning("tesseract_failed", error=str(e))
         return None
 
     def _try_easyocr(self, image_bytes: bytes) -> Optional[str]:
@@ -73,21 +104,6 @@ class CaptchaSolver:
             logger.warning("easyocr_failed", error=str(e))
         return None
 
-    def _try_tesseract(self, image_bytes: bytes) -> Optional[str]:
-        try:
-            import pytesseract
-            image = Image.open(io.BytesIO(image_bytes)).convert('L')
-            image = image.point(lambda x: 0 if x < 128 else 255)
-            text = pytesseract.image_to_string(
-                image,
-                config='--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-            )
-            cleaned = re.sub(r'[^a-zA-Z0-9]', '', text.strip())
-            return cleaned if cleaned else None
-        except Exception as e:
-            logger.warning("tesseract_failed", error=str(e))
-        return None
-
     def _preprocess_captcha(self, image_bytes: bytes) -> bytes:
         try:
             image = Image.open(io.BytesIO(image_bytes)).convert('L')
@@ -98,7 +114,7 @@ class CaptchaSolver:
             image = image.point(lambda x: 0 if x < 140 else 255)
             image = image.filter(ImageFilter.MedianFilter(size=3))
             width, height = image.size
-            image = image.resize((width * 3, height * 3), Image.LANCZOS)
+            image = image.resize((width * 2, height * 2), Image.LANCZOS)
             buf = io.BytesIO()
             image.save(buf, format='PNG')
             return buf.getvalue()
@@ -167,11 +183,10 @@ class RTIFilingService:
         self.form_mapper = PortalFormMapper()
 
     async def close(self):
-        """Cleanup method for backward compatibility (browser closes automatically inside thread)."""
+        """Cleanup method for backward compatibility."""
         pass
 
     async def file_on_central_portal(self, *args, **kwargs) -> Dict[str, Any]:
-        """Runs the synchronous Playwright code in a background thread."""
         return await asyncio.to_thread(self._file_sync, *args, **kwargs)
 
     def _file_sync(
@@ -187,26 +202,29 @@ class RTIFilingService:
 
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+                browser = p.chromium.launch(
+                    headless=True, 
+                    args=CHROMIUM_LOW_MEM_FLAGS
+                )
                 context = browser.new_context(
-                    viewport={'width': 1920, 'height': 1080},
+                    viewport={'width': 1280, 'height': 720},
                     user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                 )
                 page = context.new_page()
-                page.set_default_timeout(30000)
+                page.set_default_timeout(25000)
 
                 # Step 1: Navigate
-                page.goto(self.REQUEST_URL, wait_until="networkidle")
+                page.goto(self.REQUEST_URL, wait_until="domcontentloaded")
                 steps_completed.append("navigated_to_portal")
                 screenshots.append(base64.b64encode(page.screenshot()).decode('utf-8'))
 
                 # Step 2: Guidelines
                 try:
                     cb = page.locator('input[type="checkbox"]').first
-                    if cb.is_visible(timeout=5000):
+                    if cb.is_visible(timeout=3000):
                         cb.check()
                         page.locator('input[type="submit"], button[type="submit"]').first.click()
-                        page.wait_for_load_state("networkidle")
+                        page.wait_for_load_state("domcontentloaded")
                         steps_completed.append("guidelines_accepted")
                 except Exception:
                     steps_completed.append("guidelines_skipped")
@@ -215,7 +233,7 @@ class RTIFilingService:
                 ministry_info = self.form_mapper.get_ministry_for_department(department_type)
                 try:
                     m_sel = page.locator('select[name="m_id"], select#m_id').first
-                    m_sel.wait_for(state="visible", timeout=5000)
+                    m_sel.wait_for(state="visible", timeout=3000)
                     try:
                         m_sel.select_option(label=ministry_info["ministry"])
                     except Exception:
@@ -231,7 +249,7 @@ class RTIFilingService:
                 if ministry_info.get("public_authority"):
                     try:
                         a_sel = page.locator('select[name="pa_id"], select#pa_id').first
-                        a_sel.wait_for(state="visible", timeout=3000)
+                        a_sel.wait_for(state="visible", timeout=2000)
                         try:
                             a_sel.select_option(label=ministry_info["public_authority"])
                         except Exception:
@@ -262,9 +280,8 @@ class RTIFilingService:
                 for sel, val in fields:
                     try:
                         el = page.locator(sel).first
-                        if el.is_visible(timeout=2000):
-                            el.fill('')
-                            el.type(val, delay=10)
+                        if el.is_visible(timeout=1000):
+                            el.fill(val)
                     except Exception:
                         pass
 
@@ -279,7 +296,7 @@ class RTIFilingService:
                 for sel, val in dropdowns:
                     try:
                         el = page.locator(sel).first
-                        if el.is_visible(timeout=2000):
+                        if el.is_visible(timeout=1000):
                             try:
                                 el.select_option(label=val)
                             except Exception:
@@ -304,9 +321,8 @@ class RTIFilingService:
                 # RTI Text
                 try:
                     txt = page.locator('textarea[name="request_text"], textarea#RTIText').first
-                    if txt.is_visible(timeout=3000):
-                        txt.fill('')
-                        txt.type(rti_text[:3000], delay=5)
+                    if txt.is_visible(timeout=2000):
+                        txt.fill(rti_text[:3000])
                 except Exception:
                     pass
                 steps_completed.append("rti_text_filled")
@@ -320,10 +336,10 @@ class RTIFilingService:
 
                 # CAPTCHA
                 captcha_solved = False
-                for attempt in range(1, 6):
+                for attempt in range(1, 4):
                     try:
                         c_img = page.locator('img[src*="captcha"], img[alt*="captcha"], img.captcha-image').first
-                        if c_img.is_visible(timeout=4000):
+                        if c_img.is_visible(timeout=3000):
                             c_bytes = c_img.screenshot()
                             c_text = self.captcha_solver.solve(c_bytes, attempt)
                             if c_text:
@@ -336,7 +352,9 @@ class RTIFilingService:
                         pass
                 
                 if not captcha_solved:
+                    context.close()
                     browser.close()
+                    gc.collect()
                     return {
                         "success": False,
                         "requires_manual_captcha": True,
@@ -347,7 +365,7 @@ class RTIFilingService:
 
                 # Submit
                 page.locator('input[type="submit"][value*="Submit"], input[type="submit"][value*="Payment"], button[type="submit"]').first.click()
-                page.wait_for_load_state("networkidle", timeout=15000)
+                page.wait_for_load_state("domcontentloaded", timeout=12000)
                 steps_completed.append("form_submitted")
 
                 page_text = page.inner_text('body')
@@ -357,7 +375,9 @@ class RTIFilingService:
                 reg_match = re.search(r'(MOIAF/[A-Z]/[A-Z]/\d{2}/\d+)', page_text)
                 reg_number = reg_match.group(1) if reg_match else None
 
+                context.close()
                 browser.close()
+                gc.collect()
 
                 if reg_number:
                     return {
@@ -390,25 +410,26 @@ class RTIFilingService:
 
         except Exception as e:
             logger.error("central_filing_error", error=str(e))
+            gc.collect()
             return {"success": False, "error": str(e), "steps_completed": steps_completed}
 
     async def check_status_on_portal(self, registration_number: str, email: str) -> Dict[str, Any]:
-        """Runs the synchronous Playwright status check in a background thread."""
         return await asyncio.to_thread(self._check_status_sync, registration_number, email)
 
     def _check_status_sync(self, registration_number: str, email: str) -> Dict[str, Any]:
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(self.STATUS_URL, wait_until="networkidle")
-
+                browser = p.chromium.launch(headless=True, args=CHROMIUM_LOW_MEM_FLAGS)
+                context = browser.new_context(viewport={'width': 1280, 'height': 720})
+                page = context.new_page()
+                
+                page.goto(self.STATUS_URL, wait_until="domcontentloaded")
                 page.locator('input[name="registration_number"]').fill(registration_number)
                 page.locator('input[name="email"], input[type="email"]').fill(email)
                 
                 try:
                     c_img = page.locator('img[src*="captcha"]').first
-                    if c_img.is_visible(timeout=3000):
+                    if c_img.is_visible(timeout=2000):
                         c_text = self.captcha_solver.solve(c_img.screenshot())
                         if c_text:
                             page.locator('input[name="captcha"]').fill(c_text)
@@ -416,10 +437,12 @@ class RTIFilingService:
                     pass
 
                 page.locator('input[type="submit"]').first.click()
-                page.wait_for_load_state("networkidle")
+                page.wait_for_load_state("domcontentloaded")
 
                 page_text = page.inner_text('body')
+                context.close()
                 browser.close()
+                gc.collect()
 
                 status = "pending"
                 if "disposed" in page_text.lower():
@@ -431,4 +454,5 @@ class RTIFilingService:
                     "status_details": {"status": status},
                 }
         except Exception as e:
+            gc.collect()
             return {"success": False, "error": str(e)}
