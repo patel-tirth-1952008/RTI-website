@@ -33,9 +33,9 @@ class PortalRouter:
         }
 
         # Official portal URLs for user-facing messages
-        self._portal_urls = {
-            "gujarat": "https://rti.gujarat.gov.in",
-            "gj": "https://rti.gujarat.gov.in",
+                self._portal_urls = {
+            "gujarat": "https://onlinerti.gujarat.gov.in/rti_portal/",
+            "gj": "https://onlinerti.gujarat.gov.in/rti_portal/",
             "maharashtra": "https://rtionline.maharashtra.gov.in",
             "delhi": "https://rti.delhi.gov.in",
             "karnataka": "https://rti.karnataka.gov.in",

@@ -1,10 +1,7 @@
 """
-GUJARAT STATE RTI PORTAL ADAPTER (Memory-Optimized Sync Engine)
-=====================================================================
-Portal: https://rti.gujarat.gov.in
-Runs via asyncio.to_thread to be 100% immune to Windows event loop bugs.
-Memory optimized to run under 180MB for Render Free Tier.
-Uses Indian Proxy so Render (Singapore) bypasses NIC firewall blocks.
+GUJARAT STATE RTI PORTAL ADAPTER (Updated Active URL)
+=====================================================
+Active Portal: https://onlinerti.gujarat.gov.in/rti_portal/
 """
 
 import asyncio
@@ -42,9 +39,9 @@ class GujaratPortalAdapter(BasePortalAdapter):
     def __init__(self):
         super().__init__()
         self.portal_name = "Gujarat State RTI Portal"
-        self.portal_url = "https://rti.gujarat.gov.in"
-        self.submit_url = "https://rti.gujarat.gov.in/Request/Request.aspx"
-        self.status_url = "https://rti.gujarat.gov.in/Request/Status.aspx"
+        self.portal_url = "https://onlinerti.gujarat.gov.in/rti_portal/"
+        self.submit_url = "https://onlinerti.gujarat.gov.in/rti_portal/"
+        self.status_url = "https://onlinerti.gujarat.gov.in/rti_portal/"
         self.max_text_length = 3000
 
         self._department_map = {
@@ -67,11 +64,11 @@ class GujaratPortalAdapter(BasePortalAdapter):
         }
 
     def supports_state(self, state: str) -> bool:
-        return state.lower().strip() in ["gujarat", "gj"]
+        return (state or "").lower().strip() in ["gujarat", "gj"]
 
     def get_department_options(self, department_type: str, city: str = "") -> Dict[str, str]:
         dept_data = self._department_map.get(department_type, self._department_map["general"])
-        city_lower = city.lower().strip()
+        city_lower = (city or "").lower().strip()
         if city_lower in dept_data:
             return dept_data[city_lower]
         return dept_data.get("default", {"department": "General Administration Department", "authority": "General Administration Department"})
@@ -80,16 +77,20 @@ class GujaratPortalAdapter(BasePortalAdapter):
         """Run filing synchronously in a background thread."""
         return await asyncio.to_thread(self._file_sync, applicant, rti_request)
 
+    def _get_proxy(self):
+        try:
+            from services.proxy_service import get_indian_proxy_sync
+            return get_indian_proxy_sync()
+        except Exception:
+            return None
+
     def _file_sync(self, applicant: ApplicantDetails, rti_request: RTIRequestDetails) -> FilingResult:
         from services.rti_filing_service import CaptchaSolver
-        
-        # Fetch Indian proxy
-        from services.proxy_service import get_indian_proxy_sync
-        indian_proxy = get_indian_proxy_sync()
         
         screenshots = []
         steps = []
         captcha_solver = CaptchaSolver()
+        indian_proxy = self._get_proxy()
 
         try:
             with sync_playwright() as p:
@@ -107,63 +108,72 @@ class GujaratPortalAdapter(BasePortalAdapter):
                     user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 )
                 page = context.new_page()
-                page.set_default_timeout(35000)
+                page.set_default_timeout(45000)
 
                 # 1. Navigate
-                page.goto(self.submit_url, wait_until="domcontentloaded")
+                page.goto(self.submit_url, wait_until="domcontentloaded", timeout=45000)
                 steps.append(FilingStep.NAVIGATE.value)
+
+                # Look for "Submit Request" or "File RTI" button if on landing page
+                try:
+                    submit_link = page.locator("a:has-text('Submit Request'), button:has-text('Submit Request'), a:has-text('Apply')").first
+                    if submit_link.is_visible(timeout=3000):
+                        submit_link.click()
+                        page.wait_for_load_state("domcontentloaded", timeout=10000)
+                except Exception:
+                    pass
 
                 # 2. Select Department
                 dept_opts = self.get_department_options(rti_request.department_type, applicant.city)
-                self._sync_select(page, "select#ddlDepartment, select[name$='ddlDepartment']", dept_opts["department"])
+                self._sync_select(page, "select#ddlDepartment, select[name*='Department'], select[id*='Department']", dept_opts["department"])
                 steps.append(FilingStep.SELECT_DEPT.value)
 
                 # 3. Select Authority
-                self._sync_select(page, "select#ddlAuthority, select[name$='ddlAuthority']", dept_opts["authority"])
+                self._sync_select(page, "select#ddlAuthority, select[name*='Authority'], select[id*='Authority']", dept_opts["authority"])
                 steps.append(FilingStep.SELECT_AUTHORITY.value)
 
                 # 4. Life/Liberty
                 if applicant.is_life_liberty:
-                    self._sync_click(page, "input[id$='rdoLifeYes'], input[value='Yes'][name*='Life']")
+                    self._sync_click(page, "input[id*='LifeYes'], input[value='Yes'][name*='Life']")
                 else:
-                    self._sync_click(page, "input[id$='rdoLifeNo'], input[value='No'][name*='Life']")
+                    self._sync_click(page, "input[id*='LifeNo'], input[value='No'][name*='Life']")
                 steps.append(FilingStep.LIFE_LIBERTY.value)
 
-                # 5. Fill Details
-                self._sync_fill(page, "input[id$='txtName'], input[name$='txtName']", applicant.name)
-                self._sync_select(page, "select[id$='ddlGender'], select[name$='ddlGender']", applicant.gender.title())
-                self._sync_fill(page, "textarea[id$='txtAddress'], textarea[name$='txtAddress']", applicant.address)
-                self._sync_fill(page, "input[id$='txtPincode'], input[name$='txtPincode']", applicant.pincode)
-                self._sync_select(page, "select[id$='ddlState'], select[name$='ddlState']", "Gujarat")
+                # 5. Fill Applicant Details
+                self._sync_fill(page, "input[id*='txtName'], input[name*='Name']", applicant.name)
+                self._sync_select(page, "select[id*='Gender'], select[name*='Gender']", (applicant.gender or "male").title())
+                self._sync_fill(page, "textarea[id*='Address'], textarea[name*='Address']", applicant.address)
+                self._sync_fill(page, "input[id*='Pincode'], input[name*='Pincode']", applicant.pincode)
+                self._sync_select(page, "select[id*='State'], select[name*='State']", "Gujarat")
                 if applicant.district:
-                    self._sync_select(page, "select[id$='ddlDistrict'], select[name$='ddlDistrict']", applicant.district.title())
+                    self._sync_select(page, "select[id*='District'], select[name*='District']", applicant.district.title())
                 
-                self._sync_select(page, "select[id$='ddlStatus'], select[name$='ddlStatus']", "Urban" if applicant.area_type == "urban" else "Rural")
-                self._sync_fill(page, "input[id$='txtPhone'], input[name$='txtPhone']", applicant.phone)
-                self._sync_fill(page, "input[id$='txtMobile'], input[name$='txtMobile']", applicant.phone)
-                self._sync_fill(page, "input[id$='txtEmail'], input[name$='txtEmail']", applicant.email)
-                self._sync_select(page, "select[id$='ddlCountry'], select[name$='ddlCountry']", "Indian")
+                self._sync_select(page, "select[id*='Status'], select[name*='Status']", "Urban" if (applicant.area_type or "urban") == "urban" else "Rural")
+                self._sync_fill(page, "input[id*='Phone'], input[name*='Phone']", applicant.phone)
+                self._sync_fill(page, "input[id*='Mobile'], input[name*='Mobile']", applicant.phone)
+                self._sync_fill(page, "input[id*='Email'], input[name*='Email']", applicant.email)
+                self._sync_select(page, "select[id*='Country'], select[name*='Country']", "Indian")
 
                 if applicant.is_bpl:
-                    self._sync_click(page, "input[id$='rdoBPLYes'], input[value='Yes'][name*='BPL']")
+                    self._sync_click(page, "input[id*='BPLYes'], input[value='Yes'][name*='BPL']")
                 else:
-                    self._sync_click(page, "input[id$='rdoBPLNo'], input[value='No'][name*='BPL']")
+                    self._sync_click(page, "input[id*='BPLNo'], input[value='No'][name*='BPL']")
                 steps.append("applicant_details_filled")
 
                 # 6. Fill RTI Text
-                self._sync_fill(page, "textarea[id$='txtRTI'], textarea[name$='txtRTI'], textarea[id$='txtRequest']", rti_request.rti_text[:self.max_text_length])
+                self._sync_fill(page, "textarea[id*='RTI'], textarea[name*='RTI'], textarea[id*='Request'], textarea[name*='text']", (rti_request.rti_text or "")[:self.max_text_length])
                 steps.append(FilingStep.FILL_TEXT.value)
 
                 # 7. CAPTCHA
                 captcha_solved = False
                 for attempt in range(1, 4):
                     try:
-                        c_img = page.locator("img[id$='imgCaptcha'], img[src*='captcha']").first
+                        c_img = page.locator("img[id*='Captcha'], img[src*='captcha'], img[alt*='captcha']").first
                         if c_img.is_visible(timeout=3000):
                             c_bytes = c_img.screenshot()
                             c_text = captcha_solver.solve(c_bytes, attempt)
                             if c_text:
-                                self._sync_fill(page, "input[id$='txtCaptcha'], input[name$='txtCaptcha'], input[id$='txtSecurityCode']", c_text)
+                                self._sync_fill(page, "input[id*='Captcha'], input[name*='Captcha'], input[id*='SecurityCode']", c_text)
                                 captcha_solved = True
                                 break
                     except Exception:
@@ -177,21 +187,23 @@ class GujaratPortalAdapter(BasePortalAdapter):
                         success=False, 
                         requires_manual_captcha=True, 
                         steps_completed=steps, 
-                        error="CAPTCHA solving failed.",
+                        error="CAPTCHA solving failed on Gujarat portal.",
                         portal_url=self.portal_url,
                         portal_name=self.portal_name
                     )
 
                 # 8. Submit
-                self._sync_click(page, "input[id$='btnSubmit'], input[type='submit'][value*='Submit']")
-                page.wait_for_load_state("domcontentloaded", timeout=12000)
+                self._sync_click(page, "input[id*='btnSubmit'], input[type='submit'][value*='Submit'], button[type='submit']")
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
                 steps.append(FilingStep.SUBMIT.value)
 
                 page_text = page.inner_text("body")
                 current_url = page.url
 
-                # Check Registration Number
-                reg_match = re.search(r'(GUJ[/-][A-Z]+[/-]\d{4}[/-]\d+)', page_text)
+                reg_match = re.search(r'(GUJ[/-][A-Z0-9]+[/-]\d{4}[/-]\d+)', page_text, re.IGNORECASE)
                 reg_number = reg_match.group(1) if reg_match else None
 
                 context.close()
@@ -205,7 +217,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
                         portal_name=self.portal_name, portal_url=self.portal_url
                     )
 
-                is_payment = any(k in current_url.lower() for k in ["payment", "pay", "sbi", "treasury", "epay"])
+                is_payment = any(k in current_url.lower() for k in ["payment", "pay", "sbi", "treasury", "epay", "billdesk"])
                 if is_payment or "payment" in page_text.lower()[:500]:
                     return FilingResult(
                         success=True, requires_payment=True, payment_url=current_url, payment_amount=10.0,
@@ -222,52 +234,71 @@ class GujaratPortalAdapter(BasePortalAdapter):
         except Exception as e:
             logger.error("gujarat_filing_error", error=str(e))
             gc.collect()
-            return FilingResult(success=False, steps_completed=steps, error=str(e), portal_name=self.portal_name, portal_url=self.portal_url, payment_url=self.portal_url)
+            return FilingResult(
+                success=False,
+                steps_completed=steps,
+                error=str(e),
+                portal_name=self.portal_name,
+                portal_url=self.portal_url,
+                payment_url=self.portal_url,
+                message=(
+                    f"Gujarat State RTI Portal could not be reached ({str(e)}). "
+                    f"Your draft is saved. Open {self.portal_url} and paste your draft, "
+                    f"or retry auto-filing in a few minutes."
+                )
+            )
 
     async def check_status(self, registration_number: str, email: str, page=None) -> StatusResult:
         return await asyncio.to_thread(self._check_status_sync, registration_number, email)
 
     def _check_status_sync(self, registration_number: str, email: str) -> StatusResult:
-        from services.proxy_service import get_indian_proxy_sync
-        indian_proxy = get_indian_proxy_sync()
+        indian_proxy = self._get_proxy()
         try:
             with sync_playwright() as p:
-                launch_kwargs = {
-                    "headless": True,
-                    "args": CHROMIUM_LOW_MEM_FLAGS,
-                }
+                launch_kwargs = {"headless": True, "args": CHROMIUM_LOW_MEM_FLAGS}
                 if indian_proxy:
                     launch_kwargs["proxy"] = indian_proxy
 
                 browser = p.chromium.launch(**launch_kwargs)
                 context = browser.new_context(viewport={'width': 1280, 'height': 720})
                 page = context.new_page()
-                page.goto(self.status_url, wait_until="domcontentloaded")
-                self._sync_fill(page, "input[id$='txtRegNo']", registration_number)
-                self._sync_fill(page, "input[id$='txtEmail']", email)
-                self._sync_click(page, "input[id$='btnSearch']")
-                page.wait_for_load_state("domcontentloaded")
-                page_text = page.inner_text("body")
+                page.set_default_timeout(45000)
+                page.goto(self.status_url, wait_until="domcontentloaded", timeout=45000)
+
+                self._sync_fill(page, "input[id*='RegNo'], input[name*='RegNo']", registration_number)
+                self._sync_fill(page, "input[id*='Email'], input[name*='Email']", email)
+                self._sync_click(page, "input[id*='btnSearch'], input[type='submit']")
                 
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+
+                page_text = page.inner_text("body")
                 context.close()
                 browser.close()
                 gc.collect()
 
                 status = "pending"
-                if "disposed" in page_text.lower():
+                lower = page_text.lower()
+                if "disposed" in lower or "replied" in lower:
                     status = "response_received"
+                elif "transferred" in lower:
+                    status = "transferred"
+                elif "rejected" in lower:
+                    status = "rejected"
+
                 return StatusResult(success=True, registration_number=registration_number, status=status)
         except Exception as e:
             gc.collect()
             return StatusResult(success=False, error=str(e))
 
-    # Helper sync methods
     def _sync_fill(self, page: Page, selector: str, value: str):
         for sel in selector.split(","):
             try:
                 el = page.locator(sel.strip()).first
-                if el.is_visible(timeout=1000):
-                    el.fill(value)
+                if el.is_visible(timeout=1500):
+                    el.fill(value or "")
                     return
             except Exception:
                 pass
@@ -276,15 +307,18 @@ class GujaratPortalAdapter(BasePortalAdapter):
         for sel in selector.split(","):
             try:
                 el = page.locator(sel.strip()).first
-                if el.is_visible(timeout=1000):
+                if el.is_visible(timeout=1500):
                     try:
                         el.select_option(label=value)
                         return
                     except Exception:
                         for opt in el.locator("option").all():
-                            if value.lower() in (opt.text_content() or "").lower():
-                                el.select_option(value=opt.get_attribute("value"))
-                                return
+                            text = opt.text_content() or ""
+                            if value.lower() in text.lower():
+                                v = opt.get_attribute("value")
+                                if v is not None:
+                                    el.select_option(value=v)
+                                    return
             except Exception:
                 pass
 
@@ -292,7 +326,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
         for sel in selector.split(","):
             try:
                 el = page.locator(sel.strip()).first
-                if el.is_visible(timeout=1000):
+                if el.is_visible(timeout=1500):
                     el.click()
                     return
             except Exception:

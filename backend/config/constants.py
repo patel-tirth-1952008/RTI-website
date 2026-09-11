@@ -93,7 +93,7 @@ RTI_PORTALS: Dict[str, str] = {
     "uttar_pradesh": "https://rtionline.up.gov.in",
     "rajasthan": "https://rti.rajasthan.gov.in",
     "madhya_pradesh": "https://rtimp.gov.in",
-    "gujarat": "https://rti.gujarat.gov.in",
+    "gujarat": "https://onlinerti.gujarat.gov.in/rti_portal/",
     "west_bengal": "https://rtionline.wb.gov.in",
     "andhra_pradesh": "https://rti.ap.gov.in",
     "telangana": "https://rti.telangana.gov.in",
