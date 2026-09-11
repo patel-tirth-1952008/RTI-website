@@ -1,6 +1,9 @@
 """
-GUJARAT STATE RTI PORTAL ADAPTER (Indian Proxy Enabled)
+GUJARAT STATE RTI PORTAL ADAPTER (Memory-Optimized Sync Engine)
+=====================================================================
 Portal: https://rti.gujarat.gov.in
+Runs via asyncio.to_thread to be 100% immune to Windows event loop bugs.
+Memory optimized to run under 180MB for Render Free Tier.
 Uses Indian Proxy so Render (Singapore) bypasses NIC firewall blocks.
 """
 
@@ -8,14 +11,13 @@ import asyncio
 import re
 import base64
 import gc
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, List, Any
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeout
 
 from .base_adapter import (
     BasePortalAdapter, FilingResult, StatusResult,
     ApplicantDetails, RTIRequestDetails, FilingStep
 )
-from services.proxy_service import get_indian_proxy_sync
 import structlog
 
 logger = structlog.get_logger()
@@ -35,7 +37,7 @@ CHROMIUM_LOW_MEM_FLAGS = [
 
 
 class GujaratPortalAdapter(BasePortalAdapter):
-    """Adapter for Gujarat State RTI Portal using Indian Proxy."""
+    """Adapter for Gujarat State RTI Portal using synchronous playwright."""
 
     def __init__(self):
         super().__init__()
@@ -75,17 +77,19 @@ class GujaratPortalAdapter(BasePortalAdapter):
         return dept_data.get("default", {"department": "General Administration Department", "authority": "General Administration Department"})
 
     async def file_rti(self, applicant: ApplicantDetails, rti_request: RTIRequestDetails, page=None) -> FilingResult:
+        """Run filing synchronously in a background thread."""
         return await asyncio.to_thread(self._file_sync, applicant, rti_request)
 
     def _file_sync(self, applicant: ApplicantDetails, rti_request: RTIRequestDetails) -> FilingResult:
         from services.rti_filing_service import CaptchaSolver
         
+        # Fetch Indian proxy
+        from services.proxy_service import get_indian_proxy_sync
+        indian_proxy = get_indian_proxy_sync()
+        
         screenshots = []
         steps = []
         captcha_solver = CaptchaSolver()
-
-        # Fetch Indian proxy
-        indian_proxy = get_indian_proxy_sync()
 
         try:
             with sync_playwright() as p:
@@ -169,7 +173,14 @@ class GujaratPortalAdapter(BasePortalAdapter):
                     context.close()
                     browser.close()
                     gc.collect()
-                    return FilingResult(success=False, requires_manual_captcha=True, steps_completed=steps, error="CAPTCHA solving failed.")
+                    return FilingResult(
+                        success=False, 
+                        requires_manual_captcha=True, 
+                        steps_completed=steps, 
+                        error="CAPTCHA solving failed.",
+                        portal_url=self.portal_url,
+                        portal_name=self.portal_name
+                    )
 
                 # 8. Submit
                 self._sync_click(page, "input[id$='btnSubmit'], input[type='submit'][value*='Submit']")
@@ -179,6 +190,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
                 page_text = page.inner_text("body")
                 current_url = page.url
 
+                # Check Registration Number
                 reg_match = re.search(r'(GUJ[/-][A-Z]+[/-]\d{4}[/-]\d+)', page_text)
                 reg_number = reg_match.group(1) if reg_match else None
 
@@ -204,29 +216,26 @@ class GujaratPortalAdapter(BasePortalAdapter):
                 return FilingResult(
                     success=True, steps_completed=steps,
                     message=f"Form submitted. Check email {applicant.email} for confirmation.",
-                    portal_name=self.portal_name, portal_url=self.portal_url
+                    portal_name=self.portal_name, portal_url=self.portal_url, payment_url=self.portal_url
                 )
 
         except Exception as e:
             logger.error("gujarat_filing_error", error=str(e))
             gc.collect()
-            return FilingResult(
-                success=False,
-                steps_completed=steps,
-                error=str(e),
-                portal_name=self.portal_name,
-                portal_url=self.portal_url,
-                payment_url=self.portal_url,
-            )
+            return FilingResult(success=False, steps_completed=steps, error=str(e), portal_name=self.portal_name, portal_url=self.portal_url, payment_url=self.portal_url)
 
     async def check_status(self, registration_number: str, email: str, page=None) -> StatusResult:
         return await asyncio.to_thread(self._check_status_sync, registration_number, email)
 
     def _check_status_sync(self, registration_number: str, email: str) -> StatusResult:
+        from services.proxy_service import get_indian_proxy_sync
         indian_proxy = get_indian_proxy_sync()
         try:
             with sync_playwright() as p:
-                launch_kwargs = {"headless": True, "args": CHROMIUM_LOW_MEM_FLAGS}
+                launch_kwargs = {
+                    "headless": True,
+                    "args": CHROMIUM_LOW_MEM_FLAGS,
+                }
                 if indian_proxy:
                     launch_kwargs["proxy"] = indian_proxy
 
@@ -252,6 +261,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
             gc.collect()
             return StatusResult(success=False, error=str(e))
 
+    # Helper sync methods
     def _sync_fill(self, page: Page, selector: str, value: str):
         for sel in selector.split(","):
             try:
