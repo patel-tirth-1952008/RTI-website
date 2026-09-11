@@ -20,10 +20,9 @@ from api.v1 import api_v1_router
 from api.middleware.logging_middleware import LoggingMiddleware
 from api.middleware.rate_limiter import limiter
 
-# Import all models to register with SQLAlchemy
+# Import models for SQLAlchemy registration
 from models import user, rti_application, media, audit_log
 
-# Configure structured logging
 import logging
 
 structlog.configure(
@@ -53,10 +52,9 @@ async def lifespan(app: FastAPI):
         environment=settings.APP_ENV,
     )
 
-    # Initialize database
     await init_db()
 
-    # Initialize Sentry (free tier)
+    # Sentry Error Monitoring Init (Free Tier)
     if settings.SENTRY_DSN:
         try:
             import sentry_sdk
@@ -71,30 +69,34 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Cleanup
     await close_db()
     logger.info("application_shutdown")
 
 
-# Create FastAPI application
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description=(
-        "Enterprise-grade RTI Filing System. "
-        "Upload photos of civic issues, get AI-generated RTI applications, "
-        "and file them directly with government portals."
-    ),
+    description="Enterprise-grade RTI Filing System API.",
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url="/redoc" if settings.DEBUG else None,
     lifespan=lifespan,
 )
 
-# Rate limiter
 app.state.limiter = limiter
 
 
-# Exception handlers
+# ---- Security Headers Middleware ----
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
@@ -123,7 +125,6 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# Middleware (order matters - last added = first executed)
 app.add_middleware(LoggingMiddleware)
 
 app.add_middleware(
@@ -141,11 +142,9 @@ if settings.APP_ENV == "production":
         allowed_hosts=["*"],
     )
 
-# Include API routes
 app.include_router(api_v1_router)
 
 
-# Health check endpoint
 @app.get("/health", tags=["System"])
 async def health_check():
     return {
