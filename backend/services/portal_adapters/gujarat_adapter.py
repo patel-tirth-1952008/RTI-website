@@ -1,14 +1,15 @@
 """
-GUJARAT STATE RTI PORTAL ADAPTER (Updated Active URL)
-=====================================================
-Active Portal: https://onlinerti.gujarat.gov.in/rti_portal/
+GUJARAT STATE RTI PORTAL ADAPTER (Self-Healing Proxy & Auto-Retry Engine)
+==========================================================================
+Portal: https://onlinerti.gujarat.gov.in/rti_portal/
+Tries Indian Proxy first -> if proxy drops connection -> auto-retries direct connection.
 """
 
 import asyncio
 import re
 import base64
 import gc
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, Any
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeout
 
 from .base_adapter import (
@@ -34,7 +35,7 @@ CHROMIUM_LOW_MEM_FLAGS = [
 
 
 class GujaratPortalAdapter(BasePortalAdapter):
-    """Adapter for Gujarat State RTI Portal using synchronous playwright."""
+    """Adapter for Gujarat State RTI Portal with automatic self-healing retry."""
 
     def __init__(self):
         super().__init__()
@@ -85,12 +86,36 @@ class GujaratPortalAdapter(BasePortalAdapter):
             return None
 
     def _file_sync(self, applicant: ApplicantDetails, rti_request: RTIRequestDetails) -> FilingResult:
+        """
+        Self-healing filing execution:
+        1. Tries with Indian Proxy
+        2. If proxy fails/times out -> automatically retries direct connection
+        """
+        indian_proxy = self._get_proxy()
+
+        # Attempt 1: Try with Proxy
+        if indian_proxy:
+            logger.info("gujarat_adapter_attempt_1_with_proxy", proxy=indian_proxy)
+            result = self._execute_playwright_filing(applicant, rti_request, proxy=indian_proxy)
+            if result.success or result.requires_manual_captcha:
+                return result
+            logger.warning("proxy_attempt_failed_retrying_direct", error=result.error)
+
+        # Attempt 2: Direct Connection (Fallback)
+        logger.info("gujarat_adapter_attempt_2_direct_connection")
+        return self._execute_playwright_filing(applicant, rti_request, proxy=None)
+
+    def _execute_playwright_filing(
+        self,
+        applicant: ApplicantDetails,
+        rti_request: RTIRequestDetails,
+        proxy: Optional[Dict[str, str]] = None
+    ) -> FilingResult:
         from services.rti_filing_service import CaptchaSolver
-        
+
         screenshots = []
         steps = []
         captcha_solver = CaptchaSolver()
-        indian_proxy = self._get_proxy()
 
         try:
             with sync_playwright() as p:
@@ -98,9 +123,8 @@ class GujaratPortalAdapter(BasePortalAdapter):
                     "headless": True,
                     "args": CHROMIUM_LOW_MEM_FLAGS,
                 }
-                if indian_proxy:
-                    launch_kwargs["proxy"] = indian_proxy
-                    logger.info("gujarat_adapter_launching_with_indian_proxy", proxy=indian_proxy)
+                if proxy:
+                    launch_kwargs["proxy"] = proxy
 
                 browser = p.chromium.launch(**launch_kwargs)
                 context = browser.new_context(
@@ -108,13 +132,13 @@ class GujaratPortalAdapter(BasePortalAdapter):
                     user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 )
                 page = context.new_page()
-                page.set_default_timeout(45000)
+                page.set_default_timeout(35000)
 
                 # 1. Navigate
-                page.goto(self.submit_url, wait_until="domcontentloaded", timeout=45000)
+                page.goto(self.submit_url, wait_until="domcontentloaded", timeout=35000)
                 steps.append(FilingStep.NAVIGATE.value)
 
-                # Look for "Submit Request" or "File RTI" button if on landing page
+                # Check if click on "Submit Request" link is needed
                 try:
                     submit_link = page.locator("a:has-text('Submit Request'), button:has-text('Submit Request'), a:has-text('Apply')").first
                     if submit_link.is_visible(timeout=3000):
@@ -139,7 +163,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
                     self._sync_click(page, "input[id*='LifeNo'], input[value='No'][name*='Life']")
                 steps.append(FilingStep.LIFE_LIBERTY.value)
 
-                # 5. Fill Applicant Details
+                # 5. Fill Details
                 self._sync_fill(page, "input[id*='txtName'], input[name*='Name']", applicant.name)
                 self._sync_select(page, "select[id*='Gender'], select[name*='Gender']", (applicant.gender or "male").title())
                 self._sync_fill(page, "textarea[id*='Address'], textarea[name*='Address']", applicant.address)
@@ -241,11 +265,6 @@ class GujaratPortalAdapter(BasePortalAdapter):
                 portal_name=self.portal_name,
                 portal_url=self.portal_url,
                 payment_url=self.portal_url,
-                message=(
-                    f"Gujarat State RTI Portal could not be reached ({str(e)}). "
-                    f"Your draft is saved. Open {self.portal_url} and paste your draft, "
-                    f"or retry auto-filing in a few minutes."
-                )
             )
 
     async def check_status(self, registration_number: str, email: str, page=None) -> StatusResult:
@@ -262,8 +281,8 @@ class GujaratPortalAdapter(BasePortalAdapter):
                 browser = p.chromium.launch(**launch_kwargs)
                 context = browser.new_context(viewport={'width': 1280, 'height': 720})
                 page = context.new_page()
-                page.set_default_timeout(45000)
-                page.goto(self.status_url, wait_until="domcontentloaded", timeout=45000)
+                page.set_default_timeout(35000)
+                page.goto(self.status_url, wait_until="domcontentloaded", timeout=35000)
 
                 self._sync_fill(page, "input[id*='RegNo'], input[name*='RegNo']", registration_number)
                 self._sync_fill(page, "input[id*='Email'], input[name*='Email']", email)
@@ -297,7 +316,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
         for sel in selector.split(","):
             try:
                 el = page.locator(sel.strip()).first
-                if el.is_visible(timeout=1500):
+                if el.is_visible(timeout=1000):
                     el.fill(value or "")
                     return
             except Exception:
@@ -307,7 +326,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
         for sel in selector.split(","):
             try:
                 el = page.locator(sel.strip()).first
-                if el.is_visible(timeout=1500):
+                if el.is_visible(timeout=1000):
                     try:
                         el.select_option(label=value)
                         return
@@ -326,7 +345,7 @@ class GujaratPortalAdapter(BasePortalAdapter):
         for sel in selector.split(","):
             try:
                 el = page.locator(sel.strip()).first
-                if el.is_visible(timeout=1500):
+                if el.is_visible(timeout=1000):
                     el.click()
                     return
             except Exception:
