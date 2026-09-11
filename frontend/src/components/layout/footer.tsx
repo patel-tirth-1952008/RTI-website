@@ -81,7 +81,10 @@ export function Footer() {
           style={{ borderTop: "1px solid #1e293b" }}
         >
           <p className="text-sm text-slate-500">
-            © 2024 RTI Sarthi. Built for the citizens of India. 🇮🇳
+            © {new Date().getFullYear()} RTI Sarthi. All Rights Reserved. Proprietary software & workflow design.
+          </p>
+          <p className="text-xs text-slate-600">
+            Unauthorized copying, reverse-engineering, or reproduction of platform workflows is strictly prohibited.
           </p>
         </div>
       </div>

@@ -12,11 +12,7 @@ logger = structlog.get_logger()
 class ImageAnalysisService:
     """
     Analyze uploaded images using Google Gemini AI (free tier).
-    Detects:
-    - Type of civic issue
-    - Severity
-    - Relevant government department
-    - Generates appropriate RTI questions
+    Detects issue type, severity, department, and generates questions.
     """
 
     def __init__(self):
@@ -24,16 +20,28 @@ class ImageAnalysisService:
         self._initialized = False
 
     async def initialize(self):
-        """Lazy initialization of the Gemini model."""
+        """Lazy initialization of the Gemini model with model fallback."""
         if self._initialized:
             return
 
         try:
             import google.generativeai as genai
             genai.configure(api_key=settings.GOOGLE_GEMINI_API_KEY)
-            self.model = genai.GenerativeModel("gemini-1.5-flash")
-            self._initialized = True
-            logger.info("gemini_model_initialized")
+            
+            # Try latest model strings with fallback
+            model_names = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash", "gemini-1.5-pro"]
+            for name in model_names:
+                try:
+                    self.model = genai.GenerativeModel(name)
+                    self._initialized = True
+                    logger.info("gemini_model_initialized", model=name)
+                    break
+                except Exception:
+                    continue
+
+            if not self._initialized:
+                raise RuntimeError("Could not initialize any Gemini model variant.")
+
         except Exception as e:
             logger.error("gemini_init_failed", error=str(e))
             raise
@@ -45,10 +53,6 @@ class ImageAnalysisService:
         location: str,
         language: str = "en"
     ) -> Dict[str, Any]:
-        """
-        Analyze image and user description to understand the civic issue.
-        """
-        # If no API key, use fallback immediately
         if not settings.GOOGLE_GEMINI_API_KEY:
             logger.warning("gemini_api_key_missing_using_fallback")
             return self._get_fallback_analysis(user_description)
@@ -57,10 +61,7 @@ class ImageAnalysisService:
             await self.initialize()
 
             image = Image.open(io.BytesIO(image_bytes))
-
-            prompt = self._build_analysis_prompt(
-                user_description, location, language
-            )
+            prompt = self._build_analysis_prompt(user_description, location, language)
 
             response = self.model.generate_content(
                 [prompt, image],
@@ -89,8 +90,6 @@ class ImageAnalysisService:
         location: str,
         language: str
     ) -> str:
-        """Build Gemini prompt with prompt-injection sanitization."""
-        # Sanitize user inputs against prompt injection / jailbreaking
         safe_description = (
             user_description
             .replace("```", "")
@@ -133,23 +132,10 @@ Respond in STRICT JSON format (no markdown, no code blocks, just raw JSON):
         "<question 7 - about accountability>"
     ],
     "additional_context": "<any additional relevant context for the RTI>"
-}}
+}}"""
 
-IMPORTANT RULES:
-1. Questions must be information-seeking (not complaints).
-2. Questions should reference the RTI Act Section 6(1).
-3. Ask for certified copies of documents where relevant.
-4. Include questions about budget, accountability, and timelines.
-5. Be specific to the issue type detected.
-6. If the image shows a road issue, ask about PWD/Municipal Corporation records.
-7. Generate at least 7 strong, specific questions."""
-
-    def _parse_analysis_response(
-        self, response_text: str
-    ) -> Dict[str, Any]:
-        """Parse the Gemini response into structured data."""
+    def _parse_analysis_response(self, response_text: str) -> Dict[str, Any]:
         try:
-            # Clean up response (remove markdown code blocks if any)
             text = response_text.strip()
             if text.startswith("```"):
                 text = text.split("\n", 1)[1]
@@ -160,7 +146,6 @@ IMPORTANT RULES:
 
             result = json.loads(text.strip())
 
-            # Validate and normalize
             valid_categories = [c.value for c in IssueCategory]
             if result.get("category") not in valid_categories:
                 result["category"] = "general"
@@ -172,20 +157,12 @@ IMPORTANT RULES:
             return result
 
         except json.JSONDecodeError as e:
-            logger.error(
-                "json_parse_failed",
-                error=str(e),
-                response=response_text[:500]
-            )
+            logger.error("json_parse_failed", error=str(e), response=response_text[:500])
             return self._get_fallback_analysis("")
 
-    def _get_fallback_analysis(
-        self, user_description: str
-    ) -> Dict[str, Any]:
-        """Fallback when AI analysis fails or API key is missing."""
+    def _get_fallback_analysis(self, user_description: str) -> Dict[str, Any]:
         from config.constants import DEPARTMENT_KEYWORDS
 
-        # Simple keyword-based categorization
         description_lower = user_description.lower()
         detected_category = "general"
 
@@ -202,9 +179,7 @@ IMPORTANT RULES:
             "education": "education_department",
             "healthcare": "health_department",
         }
-        detected_department = category_to_department.get(
-            detected_category, "general"
-        )
+        detected_department = category_to_department.get(detected_category, "general")
 
         return {
             "category": detected_category,
@@ -227,21 +202,16 @@ IMPORTANT RULES:
         }
 
     async def describe_image(self, image_bytes: bytes) -> str:
-        """Get a simple description of the image."""
         if not settings.GOOGLE_GEMINI_API_KEY:
             return "Image analysis unavailable (API key not configured)"
 
         try:
             await self.initialize()
             image = Image.open(io.BytesIO(image_bytes))
-            response = self.model.generate_content(
-                [
-                    "Describe this image in detail. Focus on any "
-                    "infrastructure issues, civic problems, or "
-                    "maintenance issues visible.",
-                    image,
-                ]
-            )
+            response = self.model.generate_content([
+                "Describe this image in detail. Focus on any infrastructure issues, civic problems, or maintenance issues visible.",
+                image
+            ])
             return response.text
         except Exception as e:
             logger.error("image_description_failed", error=str(e))
