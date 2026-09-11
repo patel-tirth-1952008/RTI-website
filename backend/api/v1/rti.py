@@ -6,18 +6,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from config.database import get_db
 from config.settings import settings
-from schemas.rti import (
-    RTICreateRequest, RTIGenerateResponse,
-    RTIFileRequest, RTIFileResponse
-)
+from schemas.rti import RTICreateRequest, RTIGenerateResponse
 from services.rti_generator_service import RTIGeneratorService
-from services.notification_service import NotificationService
 from api.middleware.auth_middleware import get_current_user
 from api.middleware.rate_limiter import limiter
 from models.user import User
 from models.rti_application import RTIApplication
-from typing import Optional, List
+from typing import Optional
 import structlog
+import io
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/rti", tags=["RTI Applications"])
@@ -47,47 +44,61 @@ async def generate_rti(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """
+    Generate an RTI application.
+    Upload an image of the issue and describe it.
+    The system will:
+    1. Validate and sanitize the image (anti-malware)
+    2. Analyze the image for authenticity
+    3. Detect the type of issue via Gemini AI
+    4. Identify the correct government department
+    5. Generate a complete RTI application
+    """
     try:
         image_bytes = None
         image_filename = None
 
         if image:
-                # 1. Content-Type Header Check
+            # 1. Content-Type Header Check
             if image.content_type not in settings.ALLOWED_IMAGE_TYPES:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Unsupported image type: {image.content_type}."
-                    )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Unsupported image type: {image.content_type}."
+                )
 
-                # 2. File Size Check (Max 10MB)
+            # 2. File Size Check (Max 10MB)
             image_bytes = await image.read()
             max_size = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
             if len(image_bytes) > max_size:
                 raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Image file too large. Maximum size is {settings.MAX_UPLOAD_SIZE_MB}MB."
-                    )
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Image file too large. Maximum size is {settings.MAX_UPLOAD_SIZE_MB}MB."
+                )
 
-                # 3. Magic Byte & Integrity Verification (Anti-Malware / Fake Extension Prevention)
+            # 3. Magic Byte & Integrity Verification (Anti-Malware)
             try:
                 from PIL import Image as PILImage
-                import io
                 img = PILImage.open(io.BytesIO(image_bytes))
-                img.verify()  # Verifies this is a real, uncorrupted image file
-                    
-                    # Check actual format
-                    if img.format not in ["JPEG", "PNG", "WEBP"]:
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Uploaded file is not a valid JPEG, PNG, or WEBP image."
-                        )
-                except Exception:
+                img.verify()
+
+                # Re-open after verify (Pillow requirement)
+                img = PILImage.open(io.BytesIO(image_bytes))
+                if img.format not in ["JPEG", "PNG", "WEBP"]:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Corrupted or invalid image file. Executable or non-image files are strictly rejected."
+                        detail="Uploaded file is not a valid JPEG, PNG, or WEBP image."
                     )
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Corrupted or invalid image file. Executable or non-image files are strictly rejected."
+                )
 
-                image_filename = image.filename
+            image_filename = image.filename
+
+        # Parse category
         from config.constants import IssueCategory
         parsed_category = None
         if category:
@@ -96,6 +107,7 @@ async def generate_rti(
             except ValueError:
                 pass
 
+        # Create request object
         rti_request = RTICreateRequest(
             issue_description=issue_description,
             issue_location=issue_location,
@@ -111,12 +123,19 @@ async def generate_rti(
             user_notes=user_notes,
         )
 
+        # Generate RTI
         generator = RTIGeneratorService(db)
         result = await generator.create_rti_application(
             user=user,
             request=rti_request,
             image_bytes=image_bytes,
             image_filename=image_filename,
+        )
+
+        logger.info(
+            "rti_generated",
+            tracking_number=result.tracking_number,
+            user_id=user.id,
         )
 
         return result
@@ -132,7 +151,7 @@ async def generate_rti(
         logger.error("rti_generation_failed", error=str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to generate RTI application."
+            detail="Failed to generate RTI application. Please try again."
         )
 
 
@@ -159,4 +178,8 @@ async def delete_rti_application(
 
     await db.delete(application)
     await db.flush()
-    logger.info("rti_application_deleted", tracking_number=tracking_number, user_id=user.id)
+    logger.info(
+        "rti_application_deleted",
+        tracking_number=tracking_number,
+        user_id=user.id,
+    )
