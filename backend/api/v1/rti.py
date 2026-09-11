@@ -52,22 +52,42 @@ async def generate_rti(
         image_filename = None
 
         if image:
+                # 1. Content-Type Header Check
             if image.content_type not in settings.ALLOWED_IMAGE_TYPES:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Unsupported image type: {image.content_type}."
-                )
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Unsupported image type: {image.content_type}."
+                    )
 
+                # 2. File Size Check (Max 10MB)
             image_bytes = await image.read()
             max_size = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
             if len(image_bytes) > max_size:
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Image too large. Max: {settings.MAX_UPLOAD_SIZE_MB}MB"
-                )
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Image file too large. Maximum size is {settings.MAX_UPLOAD_SIZE_MB}MB."
+                    )
 
-            image_filename = image.filename
+                # 3. Magic Byte & Integrity Verification (Anti-Malware / Fake Extension Prevention)
+            try:
+                from PIL import Image as PILImage
+                import io
+                img = PILImage.open(io.BytesIO(image_bytes))
+                img.verify()  # Verifies this is a real, uncorrupted image file
+                    
+                    # Check actual format
+                    if img.format not in ["JPEG", "PNG", "WEBP"]:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Uploaded file is not a valid JPEG, PNG, or WEBP image."
+                        )
+                except Exception:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Corrupted or invalid image file. Executable or non-image files are strictly rejected."
+                    )
 
+                image_filename = image.filename
         from config.constants import IssueCategory
         parsed_category = None
         if category:
