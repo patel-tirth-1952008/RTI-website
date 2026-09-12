@@ -57,6 +57,16 @@ class GujaratRTIAdapter:
         self.debug = debug
         self.portal_url = "https://onlinerti.gujarat.gov.in/rti_portal/"
 
+    # Convenience method aliases for API callers expecting different names
+    def file_rti(self, *args, **kwargs) -> Dict[str, Any]:
+        return self.execute_filing(*args, **kwargs)
+
+    def submit(self, *args, **kwargs) -> Dict[str, Any]:
+        return self.execute_filing(*args, **kwargs)
+
+    def run(self, *args, **kwargs) -> Dict[str, Any]:
+        return self.execute_filing(*args, **kwargs)
+
     # -----------------------------------------------------------------------
     # PUBLIC ENTRY POINT
     # -----------------------------------------------------------------------
@@ -871,9 +881,7 @@ class GujaratRTIAdapter:
         return ok
 
     def _js_click_terms_next(self, page: Page) -> bool:
-        """
-        Find and click Next after terms — pure JS, no Playwright visibility.
-        """
+        """Find and click Next after terms — pure JS, no Playwright visibility."""
         result = page.evaluate(
             """() => {
                 const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
@@ -1241,19 +1249,11 @@ class GujaratRTIAdapter:
         time.sleep(0.5)
 
         # 2B. Fill Cascading Dropdowns: District → Taluka → Department → Office Name → Info Pertaining
-        # Extract keywords from the AI draft's department_name
         dept_keywords = [k.lower() for k in re.findall(r"\w+", department_name) if len(k) >= 3]
         logger.info(f"Matching Department dropdown against keywords: {dept_keywords}")
 
-        # Cascade Layer definitions:
-        # Layer 0: District (AHMADABAD / AHMEDABAD)
-        # Layer 1: Taluka / Type (AHMADABAD / ALL / URBAN)
-        # Layer 2: Department (Strict keyword match against AI draft's department_name)
-        # Layer 3: Office Name (First available valid office)
-        # Layer 4: Information Pertaining (First available valid category)
-
         for step in range(5):
-            time.sleep(1.2)  # Wait for API network cascade update
+            time.sleep(1.2)
 
             res = page.evaluate("""([stepIdx, targetKw]) => {
                 const selects = Array.from(document.querySelectorAll('select'))
@@ -1270,10 +1270,8 @@ class GujaratRTIAdapter:
                 let bestOpt = null;
 
                 if (stepIdx === 0 || stepIdx === 1) {
-                    // District or Taluka
                     bestOpt = options.find(o => o.text.toLowerCase().includes('ahmadabad') || o.text.toLowerCase().includes('ahmedabad')) || options[0];
                 } else if (stepIdx === 2) {
-                    // Department dropdown matching targetKw from AI draft
                     let maxScore = -1;
                     for (const opt of options) {
                         const t = opt.text.toLowerCase();
@@ -1281,12 +1279,10 @@ class GujaratRTIAdapter:
                         for (const kw of targetKw) {
                             if (t.includes(kw)) score += 10;
                         }
-                        // Municipal / Corporation extra points
                         if (t.includes('municipal') && targetKw.some(k => k.includes('municipal') || k.includes('amc'))) score += 20;
                         if (t.includes('corporation') && targetKw.some(k => k.includes('corporation'))) score += 15;
                         if (t.includes('ahmedabad') || t.includes('ahmadabad')) score += 5;
 
-                        // Penalize Chief Minister Office unless explicitly requested
                         if (t.includes('chief minister') && !targetKw.some(k => k.includes('chief') || k.includes('cm'))) {
                             score -= 50;
                         }
@@ -1297,11 +1293,9 @@ class GujaratRTIAdapter:
                         }
                     }
                     if (!bestOpt || maxScore <= 0) {
-                        // Fallback: pick first non-CM option
                         bestOpt = options.find(o => !o.text.toLowerCase().includes('chief minister')) || options[0];
                     }
                 } else {
-                    // Office Name / Info Pertaining
                     bestOpt = options[0];
                 }
 
@@ -1364,7 +1358,6 @@ class GujaratRTIAdapter:
 
         logger.info("Clicked final Next / Make Payment button")
 
-        # Wait to detect redirect to Payment gateway URL
         try:
             page.wait_for_url(
                 lambda url: any(
@@ -1375,6 +1368,10 @@ class GujaratRTIAdapter:
             logger.info(f"Direct redirect to Payment URL: {page.url}")
         except Exception:
             page.wait_for_timeout(4000)
+
+
+# Class Name Alias for generic imports expecting GujaratPortalAdapter
+GujaratPortalAdapter = GujaratRTIAdapter
 
 
 def run_gujarat_filing_sync(
