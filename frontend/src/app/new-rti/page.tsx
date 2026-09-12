@@ -1,8 +1,19 @@
 "use client";
+
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Sparkles, ArrowRight, ArrowLeft, Send, CheckCircle2, ExternalLink } from "lucide-react";
+import {
+  Sparkles,
+  ArrowRight,
+  ArrowLeft,
+  Send,
+  CheckCircle2,
+  ExternalLink,
+  Loader2,
+  ShieldCheck,
+  AlertTriangle,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -16,7 +27,7 @@ import toast from "react-hot-toast";
 
 export default function NewRTIPage() {
   const router = useRouter();
-  const { user, isAuthenticated } = useAuthStore();
+  const { user } = useAuthStore();
 
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [photo, setPhoto] = useState<File | null>(null);
@@ -30,6 +41,7 @@ export default function NewRTIPage() {
   const [editedBody, setEditedBody] = useState("");
 
   const [filing, setFiling] = useState(false);
+  const [filingStage, setFilingStage] = useState<string>("Initializing portal connection...");
   const [filingResult, setFilingResult] = useState<any>(null);
 
   useEffect(() => {
@@ -50,7 +62,7 @@ export default function NewRTIPage() {
     const formData = new FormData();
     formData.append("issue_description", description);
     formData.append("issue_location", location);
-    formData.append("issue_city", city || user?.city || "");
+    formData.append("issue_city", city || user?.city || "Ahmedabad");
     formData.append("issue_state", state || user?.state || "Gujarat");
 
     if (photo) {
@@ -73,24 +85,49 @@ export default function NewRTIPage() {
   const handleFileOnPortal = async () => {
     if (!draft) return;
     setFiling(true);
+    setFilingStage("Connecting to Gujarat RTI Portal (onlinerti.gujarat.gov.in)...");
+
+    // Cycle friendly progress status messages while Playwright works
+    const stageTimer1 = setTimeout(() => {
+      setFilingStage("Solving Math CAPTCHA & Navigating Department Options...");
+    }, 4000);
+
+    const stageTimer2 = setTimeout(() => {
+      setFilingStage("Selecting Target Department & Entering RTI Query Text...");
+    }, 10000);
+
+    const stageTimer3 = setTimeout(() => {
+      setFilingStage("Generating ₹10 Government Treasury / Payment Reference...");
+    }, 18000);
 
     try {
-      const res = await filingAPI.submit({
+      const payload = {
         tracking_number: draft.tracking_number,
-        gender: "male",
-        education: "graduate",
-        area_type: "urban",
+        applicant_name: user?.full_name || user?.name || "Citizen Applicant",
+        applicant_email: user?.email || "citizen@example.com",
+        applicant_mobile: user?.mobile || user?.phone || "9876543210",
+        applicant_address: user?.address || `${location}, ${city || "Ahmedabad"}, ${state || "Gujarat"}`,
+        applicant_pincode: user?.pincode || "380001",
+        gender: (user as any)?.gender || "male",
+        education: (user as any)?.education || "graduate",
+        area_type: (user as any)?.area_type || "urban",
         consent_to_file: true,
         modified_rti_text: editedBody,
-      });
+      };
+
+      const res = await filingAPI.submit(payload);
 
       setFilingResult(res.data);
       setStep(3);
-      toast.success("RTI Submitted to Government Portal!");
+      toast.success("RTI Automated Filing Complete!");
     } catch (err: any) {
       const detail = err.response?.data?.detail;
-      toast.error(typeof detail === "string" ? detail : "Filing failed. Please retry.");
+      const errorMessage = typeof detail === "string" ? detail : "Filing failed on portal. Please retry.";
+      toast.error(errorMessage);
     } finally {
+      clearTimeout(stageTimer1);
+      clearTimeout(stageTimer2);
+      clearTimeout(stageTimer3);
       setFiling(false);
     }
   };
@@ -111,11 +148,37 @@ export default function NewRTIPage() {
               {s}
             </div>
             <span className={`text-xs font-semibold ${step >= s ? "text-white" : "text-slate-500"}`}>
-              {s === 1 ? "Issue & Photo" : s === 2 ? "Review Draft" : "Filed"}
+              {s === 1 ? "Issue & Photo" : s === 2 ? "Review Draft" : "Filed & Payment"}
             </span>
           </div>
         ))}
       </div>
+
+      {/* Automated Filing Progress Modal Overlay */}
+      {filing && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-8 max-w-md w-full space-y-6 shadow-2xl">
+            <div className="relative w-16 h-16 mx-auto flex items-center justify-center">
+              <Loader2 className="w-16 h-16 text-blue-500 animate-spin" />
+              <ShieldCheck className="w-8 h-8 text-blue-400 absolute" />
+            </div>
+
+            <div>
+              <h3 className="text-xl font-bold text-white font-display">Automating Official Portal</h3>
+              <p className="text-xs text-slate-400 mt-1">Executing Gujarat RTI Portal Automation Pipeline</p>
+            </div>
+
+            <div className="bg-slate-800/80 p-4 rounded-xl border border-slate-700">
+              <p className="text-sm font-mono text-blue-400 font-medium animate-pulse">{filingStage}</p>
+            </div>
+
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Playwright browser engine is interacting directly with <span className="text-slate-300">onlinerti.gujarat.gov.in</span>.
+              Please do not close this window.
+            </p>
+          </div>
+        </div>
+      )}
 
       <AnimatePresence mode="wait">
         {/* STEP 1: Describe & Upload Photo */}
@@ -130,7 +193,7 @@ export default function NewRTIPage() {
               <div className="mb-6">
                 <h1 className="text-2xl font-bold font-display text-white">Describe the Issue</h1>
                 <p className="text-slate-400 text-sm">
-                  Upload a photo of the damaged road, leak, garbage, or explain the issue below.
+                  Upload a photo of the damaged road, leak, or garbage, and explain the issue below.
                 </p>
               </div>
 
@@ -171,7 +234,7 @@ export default function NewRTIPage() {
                   <textarea
                     rows={4}
                     className="w-full bg-slate-800/50 border border-slate-700 rounded-xl p-4 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm leading-relaxed"
-                    placeholder="e.g. The 200m stretch of road has huge potholes since 2 years. Water accumulates during rains, causing daily traffic jams. No repair work has been done despite repeated requests to the corporator."
+                    placeholder="e.g. The 200m stretch of road has huge potholes since 2 years. Water accumulates during rains, causing daily traffic jams. No repair work has been done despite repeated requests."
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     required
@@ -229,7 +292,7 @@ export default function NewRTIPage() {
           </motion.div>
         )}
 
-        {/* STEP 3: Submission Confirmation & Status */}
+        {/* STEP 3: Submission Confirmation & Payment Trigger */}
         {step === 3 && filingResult && (
           <motion.div
             key="step3"
@@ -242,9 +305,9 @@ export default function NewRTIPage() {
               </div>
 
               <div>
-                <h2 className="text-2xl font-bold font-display text-white">Application Processed!</h2>
+                <h2 className="text-2xl font-bold font-display text-white">RTI Application Prepared & Automated!</h2>
                 <p className="text-slate-300 text-sm mt-2 max-w-lg mx-auto leading-relaxed">
-                  {filingResult.message}
+                  {filingResult.message || "Your RTI application has been automated on the Gujarat RTI Portal."}
                 </p>
               </div>
 
@@ -257,17 +320,24 @@ export default function NewRTIPage() {
                 </div>
               )}
 
-              {filingResult.payment_url && (
-                <div className="bg-blue-500/10 border border-blue-500/30 p-6 rounded-2xl max-w-md mx-auto">
-                  <p className="text-white font-semibold mb-2">Government Fee Required (₹10)</p>
-                  <p className="text-slate-400 text-xs mb-4">
-                    The portal requires the standard ₹10 government fee to issue the registration number.
+              {filingResult.payment_url ? (
+                <div className="bg-gradient-to-r from-blue-900/40 to-purple-900/40 border border-blue-500/40 p-6 rounded-2xl max-w-md mx-auto shadow-xl">
+                  <p className="text-white font-bold text-lg mb-1">Official Government Fee Required (₹10)</p>
+                  <p className="text-slate-300 text-xs mb-5 leading-relaxed">
+                    The portal requires the standard ₹10 state treasury fee to complete official registration.
                   </p>
                   <a href={filingResult.payment_url} target="_blank" rel="noopener noreferrer">
-                    <Button variant="primary" size="md" className="w-full" glow>
-                      Complete Payment on Govt Portal <ExternalLink className="w-4 h-4 ml-2" />
+                    <Button variant="primary" size="lg" className="w-full shadow-lg shadow-blue-500/20" glow>
+                      Complete ₹10 Payment on Govt Portal <ExternalLink className="w-4 h-4 ml-2" />
                     </Button>
                   </a>
+                </div>
+              ) : (
+                <div className="bg-yellow-500/10 border border-yellow-500/30 p-4 rounded-xl max-w-md mx-auto flex items-center gap-3 text-left">
+                  <AlertTriangle className="w-6 h-6 text-yellow-400 shrink-0" />
+                  <p className="text-xs text-yellow-200">
+                    If payment URL is not directly displayed, please check your Dashboard or email for the payment link.
+                  </p>
                 </div>
               )}
 
