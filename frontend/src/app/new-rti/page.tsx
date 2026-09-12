@@ -13,6 +13,7 @@ import {
   Loader2,
   ShieldCheck,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +43,7 @@ export default function NewRTIPage() {
 
   const [filing, setFiling] = useState(false);
   const [filingStage, setFilingStage] = useState<string>("Initializing portal connection...");
+  const [filingError, setFilingError] = useState<string | null>(null);
   const [filingResult, setFilingResult] = useState<any>(null);
 
   useEffect(() => {
@@ -85,19 +87,19 @@ export default function NewRTIPage() {
   const handleFileOnPortal = async () => {
     if (!draft) return;
     setFiling(true);
+    setFilingError(null);
     setFilingStage("Connecting to Gujarat RTI Portal (onlinerti.gujarat.gov.in)...");
 
-    // Cycle friendly progress status messages while Playwright works
     const stageTimer1 = setTimeout(() => {
-      setFilingStage("Solving Math CAPTCHA & Navigating Department Options...");
+      setFilingStage("Navigating Login & Solving Math CAPTCHA...");
     }, 4000);
 
     const stageTimer2 = setTimeout(() => {
-      setFilingStage("Selecting Target Department & Entering RTI Query Text...");
+      setFilingStage("Selecting Target Department & Entering RTI Text...");
     }, 10000);
 
     const stageTimer3 = setTimeout(() => {
-      setFilingStage("Generating ₹10 Government Treasury / Payment Reference...");
+      setFilingStage("Generating ₹10 Government Treasury / Payment Link...");
     }, 18000);
 
     try {
@@ -117,12 +119,21 @@ export default function NewRTIPage() {
 
       const res = await filingAPI.submit(payload);
 
+      // Verify portal automation result
+      if (res.data && res.data.success === false) {
+        setFilingError(res.data.message || "Could not reach government portal.");
+        toast.error("Portal automation encountered an error.");
+        return; // Stay on Step 2 so user can retry or adjust input
+      }
+
+      // Success
       setFilingResult(res.data);
       setStep(3);
-      toast.success("RTI Automated Filing Complete!");
+      toast.success("RTI Automated Filing Completed!");
     } catch (err: any) {
       const detail = err.response?.data?.detail;
-      const errorMessage = typeof detail === "string" ? detail : "Filing failed on portal. Please retry.";
+      const errorMessage = typeof detail === "string" ? detail : "Filing request failed. Please retry.";
+      setFilingError(errorMessage);
       toast.error(errorMessage);
     } finally {
       clearTimeout(stageTimer1);
@@ -173,8 +184,8 @@ export default function NewRTIPage() {
             </div>
 
             <p className="text-xs text-slate-500 leading-relaxed">
-              Playwright browser engine is interacting directly with <span className="text-slate-300">onlinerti.gujarat.gov.in</span>.
-              Please do not close this window.
+              Playwright agent is filling form fields on <span className="text-slate-300">onlinerti.gujarat.gov.in</span>.
+              Please stay on this page.
             </p>
           </div>
         </div>
@@ -249,7 +260,7 @@ export default function NewRTIPage() {
           </motion.div>
         )}
 
-        {/* STEP 2: Review AI Analysis & RTI Draft */}
+        {/* STEP 2: Review AI Analysis & Submit to Portal */}
         {step === 2 && draft && (
           <motion.div
             key="step2"
@@ -258,6 +269,16 @@ export default function NewRTIPage() {
             exit={{ opacity: 0, x: 20 }}
             className="space-y-6"
           >
+            {filingError && (
+              <div className="bg-red-500/10 border border-red-500/30 p-4 rounded-xl flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                <div className="text-sm text-red-200">
+                  <p className="font-semibold">Automated Filing Failed</p>
+                  <p className="text-xs text-red-300 mt-1">{filingError}</p>
+                </div>
+              </div>
+            )}
+
             <AIAnalysisCard
               category={draft.category}
               categoryConfidence={draft.ai_category_confidence}
@@ -286,13 +307,21 @@ export default function NewRTIPage() {
                 className="w-2/3"
                 glow
               >
-                <Send className="w-5 h-5 mr-2" /> Submit to Official Portal
+                {filingError ? (
+                  <>
+                    <RefreshCw className="w-5 h-5 mr-2" /> Retry Submission to Portal
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-5 h-5 mr-2" /> Submit to Official Portal
+                  </>
+                )}
               </Button>
             </div>
           </motion.div>
         )}
 
-        {/* STEP 3: Submission Confirmation & Payment Trigger */}
+        {/* STEP 3: Successful Automation & Official Payment Trigger */}
         {step === 3 && filingResult && (
           <motion.div
             key="step3"
@@ -305,9 +334,9 @@ export default function NewRTIPage() {
               </div>
 
               <div>
-                <h2 className="text-2xl font-bold font-display text-white">RTI Application Prepared & Automated!</h2>
+                <h2 className="text-2xl font-bold font-display text-white">Successfully Automated on Govt Portal!</h2>
                 <p className="text-slate-300 text-sm mt-2 max-w-lg mx-auto leading-relaxed">
-                  {filingResult.message || "Your RTI application has been automated on the Gujarat RTI Portal."}
+                  {filingResult.message || "Your application was automatically entered into the Gujarat State RTI Portal."}
                 </p>
               </div>
 
@@ -320,24 +349,17 @@ export default function NewRTIPage() {
                 </div>
               )}
 
-              {filingResult.payment_url ? (
+              {filingResult.payment_url && (
                 <div className="bg-gradient-to-r from-blue-900/40 to-purple-900/40 border border-blue-500/40 p-6 rounded-2xl max-w-md mx-auto shadow-xl">
-                  <p className="text-white font-bold text-lg mb-1">Official Government Fee Required (₹10)</p>
+                  <p className="text-white font-bold text-lg mb-1">Government Fee Required (₹10)</p>
                   <p className="text-slate-300 text-xs mb-5 leading-relaxed">
-                    The portal requires the standard ₹10 state treasury fee to complete official registration.
+                    Click below to open the official state treasury gateway and complete your ₹10 payment.
                   </p>
                   <a href={filingResult.payment_url} target="_blank" rel="noopener noreferrer">
                     <Button variant="primary" size="lg" className="w-full shadow-lg shadow-blue-500/20" glow>
                       Complete ₹10 Payment on Govt Portal <ExternalLink className="w-4 h-4 ml-2" />
                     </Button>
                   </a>
-                </div>
-              ) : (
-                <div className="bg-yellow-500/10 border border-yellow-500/30 p-4 rounded-xl max-w-md mx-auto flex items-center gap-3 text-left">
-                  <AlertTriangle className="w-6 h-6 text-yellow-400 shrink-0" />
-                  <p className="text-xs text-yellow-200">
-                    If payment URL is not directly displayed, please check your Dashboard or email for the payment link.
-                  </p>
                 </div>
               )}
 
