@@ -13,12 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
-
 from config.settings import settings
 from config.database import init_db, close_db
 from api.v1 import api_v1_router
 from api.middleware.logging_middleware import LoggingMiddleware
 from api.middleware.rate_limiter import limiter
+
+# Import your new RTI route
+from backend.api.routes import rti 
 
 # Import models for SQLAlchemy registration
 from models import user, rti_application, media, audit_log
@@ -142,7 +144,13 @@ if settings.APP_ENV == "production":
         allowed_hosts=["*"],
     )
 
+# ---------------------------------------------------------
+# Mount Routers
+# ---------------------------------------------------------
 app.include_router(api_v1_router)
+
+# Mount the new RTI automation router!
+app.include_router(rti.router, prefix="/api/automation", tags=["RTI Automation"])
 
 
 @app.get("/health", tags=["System"])
