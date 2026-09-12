@@ -19,6 +19,7 @@ import time
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright, Page, Request, TimeoutError as PlaywrightTimeout
 
 # ---------------------------------------------------------------------------
@@ -49,13 +50,28 @@ except ModuleNotFoundError:
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Official Gujarat RTI portal (DO NOT use rti.gujarat.gov.in)
+# ---------------------------------------------------------------------------
+GUJARAT_RTI_PORTAL_URL = "https://onlinerti.gujarat.gov.in/rti_portal/"
+GUJARAT_RTI_ALLOWED_HOSTS = (
+    "onlinerti.gujarat.gov.in",
+)
+GUJARAT_RTI_BLOCKED_HOSTS = (
+    "rti.gujarat.gov.in",
+    "www.rti.gujarat.gov.in",
+)
+
 
 class GujaratRTIAdapter:
     """Driver for live Gujarat RTI portal (OTP + multi-step wizard)."""
 
+    PORTAL_URL = GUJARAT_RTI_PORTAL_URL
+
     def __init__(self, debug: bool = getattr(settings, "DEBUG", True)):
         self.debug = debug
-        self.portal_url = "https://onlinerti.gujarat.gov.in/rti_portal/"
+        # Always pin to official online filing portal
+        self.portal_url = GUJARAT_RTI_PORTAL_URL
 
     # Convenience method aliases for API callers expecting different names
     def file_rti(self, *args, **kwargs) -> Dict[str, Any]:
@@ -68,6 +84,84 @@ class GujaratRTIAdapter:
         return self.execute_filing(*args, **kwargs)
 
     # -----------------------------------------------------------------------
+    # URL guards — never stay on rti.gujarat.gov.in
+    # -----------------------------------------------------------------------
+    def _host(self, url: str) -> str:
+        try:
+            return (urlparse(url).hostname or "").lower()
+        except Exception:
+            return ""
+
+    def _is_blocked_portal(self, url: str) -> bool:
+        host = self._host(url)
+        return any(host == b or host.endswith("." + b) for b in GUJARAT_RTI_BLOCKED_HOSTS)
+
+    def _is_allowed_portal(self, url: str) -> bool:
+        host = self._host(url)
+        if not host:
+            return False
+        # Allow payment gateways later in the flow
+        payment_hints = (
+            "egras", "treasury", "sbi", "billdesk", "payu", "razorpay",
+            "payment", "checkout", "pg", "gov.in",
+        )
+        if any(h in (url or "").lower() for h in ("egras", "treasury", "billdesk", "payu", "razorpay", "sbi.co")):
+            return True
+        return any(host == a or host.endswith("." + a) for a in GUJARAT_RTI_ALLOWED_HOSTS)
+
+    def _ensure_correct_portal(self, page: Page, reason: str = "") -> None:
+        """If browser landed on old rti.gujarat.gov.in (or blank), force official URL."""
+        current = page.url or ""
+        host = self._host(current)
+        if self._is_blocked_portal(current) or host in ("", "about:blank", "new"):
+            logger.warning(
+                "Wrong/empty portal URL detected (%s) host=%s url=%s → forcing %s",
+                reason or "guard",
+                host,
+                current,
+                self.portal_url,
+            )
+            page.goto(self.portal_url, wait_until="domcontentloaded", timeout=60000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
+            time.sleep(1.0)
+            if self._is_blocked_portal(page.url):
+                raise RuntimeError(
+                    f"Portal still on blocked host after correction: {page.url}. "
+                    f"Expected {self.portal_url}"
+                )
+            logger.info("Portal corrected → %s", page.url)
+
+    def _goto_portal(self, page: Page) -> None:
+        """Navigate only to https://onlinerti.gujarat.gov.in/rti_portal/"""
+        url = self.portal_url
+        if "onlinerti.gujarat.gov.in" not in url:
+            url = GUJARAT_RTI_PORTAL_URL
+            self.portal_url = url
+
+        logger.info("Navigating to official Gujarat RTI portal: %s", url)
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        time.sleep(1.2)
+
+        # Some bookmarks/proxies still bounce to rti.gujarat.gov.in — kill that immediately
+        self._ensure_correct_portal(page, reason="post-goto")
+
+        final_host = self._host(page.url)
+        if final_host not in GUJARAT_RTI_ALLOWED_HOSTS and not self._is_allowed_portal(page.url):
+            logger.warning("Unexpected host after goto: %s — retrying official URL once", page.url)
+            page.goto(GUJARAT_RTI_PORTAL_URL, wait_until="domcontentloaded", timeout=60000)
+            time.sleep(1.2)
+            self._ensure_correct_portal(page, reason="retry-goto")
+
+        logger.info("Portal ready at: %s", page.url)
+
+    # -----------------------------------------------------------------------
     # PUBLIC ENTRY POINT
     # -----------------------------------------------------------------------
     def execute_filing(
@@ -77,7 +171,14 @@ class GujaratRTIAdapter:
         department_name: str = "Ahmedabad Municipal Corporation",
         attachment_path: Optional[str] = None,
     ) -> Dict[str, Any]:
-        logger.info(f"Starting Gujarat RTI automation → Target Department: '{department_name}'")
+        # Hard pin every run (prevents stale instance attrs / wrong config)
+        self.portal_url = GUJARAT_RTI_PORTAL_URL
+
+        logger.info(
+            "Starting Gujarat RTI automation → portal=%s | department='%s'",
+            self.portal_url,
+            department_name,
+        )
 
         headless_setting = False if self.debug else True
         captured = {"payment_url": None, "registration_number": None}
@@ -124,8 +225,30 @@ class GujaratRTIAdapter:
 
             page.on("dialog", lambda d: d.accept())
 
+            # Block accidental navigation to the OLD portal host
+            def on_navigate(frame):
+                if frame != page.main_frame:
+                    return
+                try:
+                    u = frame.url or ""
+                    if self._is_blocked_portal(u):
+                        logger.warning("Blocked navigation to old portal: %s", u)
+                        page.evaluate(
+                            f"window.location.replace({GUJARAT_RTI_PORTAL_URL!r})"
+                        )
+                except Exception:
+                    pass
+
+            try:
+                page.on("framenavigated", on_navigate)
+            except Exception:
+                pass
+
             def on_request(req: Request):
                 u = req.url.lower()
+                # Never treat old portal as payment
+                if "rti.gujarat.gov.in" in u and "onlinerti" not in u:
+                    return
                 if "failpayment" in u or u.endswith(".png") or u.endswith(".jpg"):
                     return
                 if any(
@@ -142,30 +265,33 @@ class GujaratRTIAdapter:
                         "pg",
                     )
                 ):
-                    logger.info(f"Payment gateway intercepted: {req.url}")
+                    logger.info("Payment gateway intercepted: %s", req.url)
                     captured["payment_url"] = req.url
 
             page.on("request", on_request)
 
             try:
-                logger.info(f"Navigating to {self.portal_url}")
-                page.goto(self.portal_url, wait_until="domcontentloaded", timeout=60000)
-                try:
-                    page.wait_for_load_state("networkidle", timeout=15000)
-                except Exception:
-                    pass
-                time.sleep(1.2)
+                # MUST open onlinerti — never rti.gujarat.gov.in
+                self._goto_portal(page)
 
                 self._click_login_register(page)
+                self._ensure_correct_portal(page, reason="after-login-click")
+
                 self._fill_login_form(page, applicant_data)
                 self._wait_for_otp_verification(page)
+                self._ensure_correct_portal(page, reason="after-otp")
+
                 self._fill_profile_if_needed(page, applicant_data)
                 self._run_rti_wizard(
                     page, applicant_data, rti_text, department_name, attachment_path
                 )
 
                 final_url = captured["payment_url"] or page.url
-                logger.info(f"Finished. Final Payment/Portal URL = {final_url}")
+                # Never return the blocked legacy host as payment/portal URL
+                if self._is_blocked_portal(final_url):
+                    final_url = captured["payment_url"] or self.portal_url
+
+                logger.info("Finished. Final Payment/Portal URL = %s", final_url)
 
                 try:
                     txt = page.content()
@@ -180,10 +306,18 @@ class GujaratRTIAdapter:
                 return {
                     "success": True,
                     "portal_name": "Gujarat State RTI Portal",
+                    "portal_url": self.portal_url,
                     "payment_url": final_url,
                     "registration_number": captured["registration_number"],
-                    "status": "PAYMENT_PENDING" if captured["payment_url"] or "create" not in final_url else "DRAFTED",
-                    "message": f"RTI drafted successfully for '{department_name}' on Gujarat portal. Pay ₹10 official fee via the gateway link.",
+                    "status": (
+                        "PAYMENT_PENDING"
+                        if captured["payment_url"] or "create" not in final_url
+                        else "DRAFTED"
+                    ),
+                    "message": (
+                        f"RTI drafted successfully for '{department_name}' on Gujarat portal "
+                        f"({self.portal_url}). Pay ₹10 official fee via the gateway link."
+                    ),
                 }
 
             except Exception as exc:
@@ -199,6 +333,7 @@ class GujaratRTIAdapter:
                 return {
                     "success": False,
                     "portal_name": "Gujarat State RTI Portal",
+                    "portal_url": self.portal_url,
                     "payment_url": self.portal_url,
                     "registration_number": None,
                     "error": str(exc),
@@ -228,6 +363,7 @@ class GujaratRTIAdapter:
     # -----------------------------------------------------------------------
     def _click_login_register(self, page: Page) -> None:
         logger.info("Looking for top 'Login / Register' button...")
+        self._ensure_correct_portal(page, reason="before-login-register")
 
         mobile_selector = (
             "input[placeholder*='Mobile' i], input[placeholder*='mobile'], input[type='tel']"
@@ -257,13 +393,20 @@ class GujaratRTIAdapter:
                 box = loc.bounding_box()
                 if box and box["y"] > 120:
                     continue
+                # Skip links that point at the old portal
+                try:
+                    href = (loc.get_attribute("href") or "").lower()
+                    if "rti.gujarat.gov.in" in href and "onlinerti" not in href:
+                        continue
+                except Exception:
+                    pass
                 try:
                     loc.scroll_into_view_if_needed(timeout=2000)
                 except Exception:
                     pass
                 loc.click(timeout=3000)
                 clicked = True
-                logger.info(f"Clicked header Login/Register using: {sel}")
+                logger.info("Clicked header Login/Register using: %s", sel)
                 time.sleep(1.0)
                 break
             except Exception:
@@ -273,6 +416,8 @@ class GujaratRTIAdapter:
             logger.warning("Selectors missed — coordinate click on top-right header")
             page.mouse.click(1250, 40)
             time.sleep(1.0)
+
+        self._ensure_correct_portal(page, reason="after-login-register-click")
 
         try:
             page.locator(mobile_selector).first.wait_for(state="visible", timeout=12000)
@@ -284,12 +429,15 @@ class GujaratRTIAdapter:
                     const els = Array.from(document.querySelectorAll('a, button'));
                     for (const el of els) {
                         const t = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+                        const href = (el.getAttribute('href') || '').toLowerCase();
+                        if (href.includes('rti.gujarat.gov.in') && !href.includes('onlinerti')) continue;
                         const r = el.getBoundingClientRect();
                         if (r.y < 100 && /login/i.test(t)) { el.click(); return; }
                     }
                 }"""
             )
             time.sleep(1.0)
+            self._ensure_correct_portal(page, reason="after-js-login-fallback")
             page.locator(mobile_selector).first.wait_for(state="visible", timeout=10000)
             logger.info("Login / Register modal is open and mobile field is ready.")
 
@@ -300,7 +448,7 @@ class GujaratRTIAdapter:
         phone = re.sub(r"\D", "", str(applicant_data.get("phone", "")))[-10:]
         if len(phone) != 10:
             raise RuntimeError(f"Invalid mobile number (need 10 digits): {phone!r}")
-        logger.info(f"Filling mobile number: {phone}")
+        logger.info("Filling mobile number: %s", phone)
 
         mobile = page.locator(
             "input[placeholder*='Mobile' i], input[placeholder*='mobile'], "
@@ -319,7 +467,7 @@ class GujaratRTIAdapter:
 
         last_err = ""
         for attempt in range(1, 4):
-            logger.info(f"Login attempt {attempt}/3")
+            logger.info("Login attempt %s/3", attempt)
 
             answer = self._solve_math_captcha(page)
             if answer is None:
@@ -343,7 +491,7 @@ class GujaratRTIAdapter:
                 last_err = "Could not find/click modal Login button below captcha"
                 continue
 
-            logger.info(f"Submitted login form (attempt {attempt})")
+            logger.info("Submitted login form (attempt %s)", attempt)
 
             if self._otp_ui_present(page, wait_ms=12000) or self._logged_in_ui_present(page, wait_ms=3000):
                 logger.info("OTP/dashboard detected after submit — login OK")
@@ -351,7 +499,7 @@ class GujaratRTIAdapter:
 
             err = self._read_login_error(page)
             last_err = err or "OTP modal did not open after submit"
-            logger.warning(f"After submit: {last_err}")
+            logger.warning("After submit: %s", last_err)
 
             try:
                 page.screenshot(path=f"gujarat_login_attempt_{attempt}.png")
@@ -366,7 +514,7 @@ class GujaratRTIAdapter:
                 self._refresh_captcha(page)
                 time.sleep(1.0)
             else:
-                logger.error(f"Portal rejected login: {err}")
+                logger.error("Portal rejected login: %s", err)
                 if attempt >= 2:
                     break
                 time.sleep(1.0)
@@ -458,7 +606,7 @@ class GujaratRTIAdapter:
                     if "login" in txt or "register" in txt:
                         continue
                     loc.click(timeout=1200)
-                    logger.info(f"Clicked captcha refresh via: {sel}")
+                    logger.info("Clicked captcha refresh via: %s", sel)
                     time.sleep(0.8)
                     return
             except Exception:
@@ -477,7 +625,7 @@ class GujaratRTIAdapter:
                     a, b = int(m.group(1)), int(m.group(2))
                     if a <= 99 and b <= 99:
                         ans = str(a + b)
-                        logger.info(f"CAPTCHA via text: {a} + {b} = {ans}")
+                        logger.info("CAPTCHA via text: %s + %s = %s", a, b, ans)
                         return ans
         except Exception:
             pass
@@ -506,16 +654,19 @@ class GujaratRTIAdapter:
             )
             if len(nums) >= 2 and nums[0] <= 99 and nums[1] <= 99:
                 ans = str(nums[0] + nums[1])
-                logger.info(f"CAPTCHA via DOM: {nums[0]} + {nums[1]} = {ans} (candidates={nums})")
+                logger.info(
+                    "CAPTCHA via DOM: %s + %s = %s (candidates=%s)",
+                    nums[0], nums[1], ans, nums,
+                )
                 return ans
         except Exception as e:
-            logger.debug(f"DOM captcha: {e}")
+            logger.debug("DOM captcha: %s", e)
 
         logger.warning("Could not parse math CAPTCHA")
         return None
 
     def _fill_captcha_answer(self, page: Page, answer: str) -> None:
-        logger.info(f"Filling captcha answer: {answer}")
+        logger.info("Filling captcha answer: %s", answer)
         selectors = [
             "input[placeholder*='Capt' i]",
             "input[placeholder*='captcha' i]",
@@ -541,7 +692,7 @@ class GujaratRTIAdapter:
                     if box and box["width"] > 280:
                         continue
                     self._human_fill(inp, answer, delay=80)
-                    logger.info(f"Captcha filled via: {sel}")
+                    logger.info("Captcha filled via: %s", sel)
                     return
             except Exception:
                 continue
@@ -612,7 +763,9 @@ class GujaratRTIAdapter:
 
         if isinstance(result, dict) and result.get("ok"):
             logger.info(
-                f"Modal submit clicked via geometry JS (text={result.get('text')!r}, y={result.get('y')})"
+                "Modal submit clicked via geometry JS (text=%r, y=%s)",
+                result.get("text"),
+                result.get("y"),
             )
             time.sleep(1.2)
             return True
@@ -780,7 +933,7 @@ class GujaratRTIAdapter:
                     sels.nth(idx).select_option(label=label)
                     time.sleep(0.35)
         except Exception as e:
-            logger.warning(f"Profile dropdowns: {e}")
+            logger.warning("Profile dropdowns: %s", e)
 
         save = page.locator(
             "button:has-text('Save'), button:has-text('Update'), button:has-text('Submit')"
@@ -877,7 +1030,7 @@ class GujaratRTIAdapter:
         if ok:
             logger.info("Checked Terms & Conditions checkbox (JS/React events).")
         else:
-            logger.warning(f"Terms checkbox JS tick failed: {result}")
+            logger.warning("Terms checkbox JS tick failed: %s", result)
         return ok
 
     def _js_click_terms_next(self, page: Page) -> bool:
@@ -971,8 +1124,10 @@ class GujaratRTIAdapter:
 
         if isinstance(result, dict) and result.get("ok"):
             logger.info(
-                f"Terms Next clicked via JS "
-                f"(text={result.get('text')!r}, y={result.get('y')}, score={result.get('score')})"
+                "Terms Next clicked via JS (text=%r, y=%s, score=%s)",
+                result.get("text"),
+                result.get("y"),
+                result.get("score"),
             )
             try:
                 cx, cy = result.get("cx"), result.get("cy")
@@ -980,18 +1135,18 @@ class GujaratRTIAdapter:
                     page.mouse.move(cx, cy)
                     time.sleep(0.12)
                     page.mouse.click(cx, cy)
-                    logger.info(f"Also mouse-clicked Next at ({cx}, {cy})")
+                    logger.info("Also mouse-clicked Next at (%s, %s)", cx, cy)
             except Exception:
                 pass
             return True
 
-        logger.warning(f"JS Next click found nothing: {result}")
+        logger.warning("JS Next click found nothing: %s", result)
         return False
 
     def _click_terms_next_with_retries(self, page: Page, max_tries: int = 6) -> bool:
         """After checkbox: try many strategies until application step appears."""
         for attempt in range(1, max_tries + 1):
-            logger.info(f"Terms → Next click try {attempt}/{max_tries}")
+            logger.info("Terms → Next click try %s/%s", attempt, max_tries)
 
             self._js_tick_terms_checkbox(page)
             time.sleep(0.35)
@@ -1016,7 +1171,7 @@ class GujaratRTIAdapter:
                             continue
                         target = loc.last
                         if self._force_click_element(page, target):
-                            logger.info(f"Force-clicked Next via selector: {sel}")
+                            logger.info("Force-clicked Next via selector: %s", sel)
                             clicked = True
                             break
                     except Exception:
@@ -1052,7 +1207,7 @@ class GujaratRTIAdapter:
                 except Exception:
                     pass
 
-            logger.warning(f"Still on Terms after try {attempt}")
+            logger.warning("Still on Terms after try %s", attempt)
 
         return self._on_application_details(page) or not self._on_terms_page(page)
 
@@ -1137,6 +1292,7 @@ class GujaratRTIAdapter:
         attachment_path: Optional[str],
     ) -> None:
         logger.info("Starting RTI Wizard flow...")
+        self._ensure_correct_portal(page, reason="wizard-start")
 
         # -------------------------------------------------------------------
         # Step 1: Check if already auto-redirected to Terms & Conditions page
@@ -1164,11 +1320,16 @@ class GujaratRTIAdapter:
                 loc = page.locator(sel).first
                 try:
                     if loc.count() and loc.is_visible(timeout=2000):
+                        href = (loc.get_attribute("href") or "").lower()
+                        if "rti.gujarat.gov.in" in href and "onlinerti" not in href:
+                            continue
                         self._force_click_element(page, loc)
                         time.sleep(1.5)
                         break
                 except Exception:
                     continue
+
+        self._ensure_correct_portal(page, reason="before-terms")
 
         # -------------------------------------------------------------------
         # Accept Terms & Conditions — human path: scroll → tick → Next
@@ -1250,7 +1411,7 @@ class GujaratRTIAdapter:
 
         # 2B. Fill Cascading Dropdowns: District → Taluka → Department → Office Name → Info Pertaining
         dept_keywords = [k.lower() for k in re.findall(r"\w+", department_name) if len(k) >= 3]
-        logger.info(f"Matching Department dropdown against keywords: {dept_keywords}")
+        logger.info("Matching Department dropdown against keywords: %s", dept_keywords)
 
         for step in range(5):
             time.sleep(1.2)
@@ -1309,9 +1470,9 @@ class GujaratRTIAdapter:
             }""", [step, dept_keywords])
 
             if res.get("ok"):
-                logger.info(f"Dropdown {step} selected → '{res.get('text')}'")
+                logger.info("Dropdown %s selected → '%s'", step, res.get("text"))
             else:
-                logger.warning(f"Dropdown {step} note → {res.get('msg')}")
+                logger.warning("Dropdown %s note → %s", step, res.get("msg"))
 
         # 2C. Fill Text Area safely respecting 750 character limit with '+' chunks
         logger.info("Injecting AI RTI text (Chunking max 740 chars per box)")
@@ -1331,7 +1492,7 @@ class GujaratRTIAdapter:
             plus_btn = page.locator("button:has-text('+'), .btn:has-text('+'), i.fa-plus").first
             for i in range(1, min(len(chunks), 4)):
                 if plus_btn.count():
-                    logger.info(f"Adding text chunk {i + 1} via '+' button")
+                    logger.info("Adding text chunk %s via '+' button", i + 1)
                     self._force_click_element(page, plus_btn)
                     time.sleep(0.5)
                     tas = page.locator("textarea")
@@ -1343,7 +1504,7 @@ class GujaratRTIAdapter:
             fi = page.locator("input[type='file']")
             if fi.count():
                 fi.first.set_input_files(attachment_path)
-                logger.info(f"Attached file: {attachment_path}")
+                logger.info("Attached file: %s", attachment_path)
 
         time.sleep(1.0)
 
@@ -1361,11 +1522,12 @@ class GujaratRTIAdapter:
         try:
             page.wait_for_url(
                 lambda url: any(
-                    k in url.lower() for k in ("payment", "checkout", "treasury", "sbi", "egras", "payu", "billdesk")
+                    k in url.lower()
+                    for k in ("payment", "checkout", "treasury", "sbi", "egras", "payu", "billdesk")
                 ),
                 timeout=12000,
             )
-            logger.info(f"Direct redirect to Payment URL: {page.url}")
+            logger.info("Direct redirect to Payment URL: %s", page.url)
         except Exception:
             page.wait_for_timeout(4000)
 
