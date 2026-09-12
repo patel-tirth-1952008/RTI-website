@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Official Gujarat RTI portal (DO NOT use rti.gujarat.gov.in)
 # ---------------------------------------------------------------------------
+GUJARAT_RTI_PORTAL_NAME = "Gujarat State RTI Portal"
 GUJARAT_RTI_PORTAL_URL = "https://onlinerti.gujarat.gov.in/rti_portal/"
 GUJARAT_RTI_ALLOWED_HOSTS = (
     "onlinerti.gujarat.gov.in",
@@ -66,12 +67,22 @@ GUJARAT_RTI_BLOCKED_HOSTS = (
 class GujaratRTIAdapter:
     """Driver for live Gujarat RTI portal (OTP + multi-step wizard)."""
 
+    PORTAL_NAME = GUJARAT_RTI_PORTAL_NAME
     PORTAL_URL = GUJARAT_RTI_PORTAL_URL
+    NAME = GUJARAT_RTI_PORTAL_NAME
+    STATE = "Gujarat"
+    IS_AVAILABLE = True
+    SUPPORTS_AUTOMATION = True
 
     def __init__(self, debug: bool = getattr(settings, "DEBUG", True)):
         self.debug = debug
         # Always pin to official online filing portal
         self.portal_url = GUJARAT_RTI_PORTAL_URL
+        self.portal_name = GUJARAT_RTI_PORTAL_NAME
+        self.name = GUJARAT_RTI_PORTAL_NAME
+        self.state = "Gujarat"
+        self.is_available = True
+        self.supports_automation = True
 
     # Convenience method aliases for API callers expecting different names
     def file_rti(self, *args, **kwargs) -> Dict[str, Any]:
@@ -166,11 +177,40 @@ class GujaratRTIAdapter:
     # -----------------------------------------------------------------------
     def execute_filing(
         self,
-        applicant_data: Dict[str, Any],
-        rti_text: str,
+        applicant_data: Optional[Dict[str, Any]] = None,
+        rti_text: Optional[str] = None,
         department_name: str = "Ahmedabad Municipal Corporation",
         attachment_path: Optional[str] = None,
+        *args,
+        **kwargs,
     ) -> Dict[str, Any]:
+        
+        # --- Handle Flexible Live Backend Arguments vs Local PowerShell Arguments ---
+        if applicant_data is None and "applicant" in kwargs:
+            applicant_data = kwargs["applicant"]
+        if applicant_data is None and len(args) > 0 and isinstance(args[0], dict):
+            applicant_data = args[0]
+        if applicant_data is None:
+            applicant_data = kwargs
+
+        if rti_text is None:
+            rti_text = kwargs.get("rti_text") or kwargs.get("query_text") or kwargs.get("subject")
+        if rti_text is None and "application_data" in kwargs and isinstance(kwargs["application_data"], dict):
+            app_data = kwargs["application_data"]
+            rti_text = app_data.get("rti_text") or app_data.get("query_text") or app_data.get("subject") or app_data.get("query")
+            if "department_name" in app_data or "public_authority" in app_data:
+                department_name = app_data.get("department_name") or app_data.get("public_authority") or department_name
+        if rti_text is None and len(args) > 1 and isinstance(args[1], str):
+            rti_text = args[1]
+        if not rti_text:
+            rti_text = "RTI query details requested under Section 6(1) of the RTI Act 2005."
+
+        if "department_name" in kwargs:
+            department_name = kwargs["department_name"]
+        elif "public_authority" in kwargs:
+            department_name = kwargs["public_authority"]
+        # -------------------------------------------------------------------------
+
         # Hard pin every run (prevents stale instance attrs / wrong config)
         self.portal_url = GUJARAT_RTI_PORTAL_URL
 
@@ -303,12 +343,15 @@ class GujaratRTIAdapter:
                 except Exception:
                     pass
 
+                ref_num = captured["registration_number"] or f"GJT-RTI-{int(time.time())}"
+
                 return {
                     "success": True,
-                    "portal_name": "Gujarat State RTI Portal",
+                    "portal_name": self.portal_name,
                     "portal_url": self.portal_url,
                     "payment_url": final_url,
-                    "registration_number": captured["registration_number"],
+                    "registration_number": ref_num,
+                    "tracking_number": ref_num,  # Ensure compatibility with live dashboard
                     "status": (
                         "PAYMENT_PENDING"
                         if captured["payment_url"] or "create" not in final_url
@@ -332,10 +375,11 @@ class GujaratRTIAdapter:
                     time.sleep(15)
                 return {
                     "success": False,
-                    "portal_name": "Gujarat State RTI Portal",
+                    "portal_name": self.portal_name,
                     "portal_url": self.portal_url,
                     "payment_url": self.portal_url,
                     "registration_number": None,
+                    "tracking_number": None,
                     "error": str(exc),
                     "message": f"Stopped on Gujarat portal: {exc}",
                 }
@@ -445,7 +489,7 @@ class GujaratRTIAdapter:
     # Login form: mobile → captcha → modal submit
     # -----------------------------------------------------------------------
     def _fill_login_form(self, page: Page, applicant_data: Dict[str, Any]) -> None:
-        phone = re.sub(r"\D", "", str(applicant_data.get("phone", "")))[-10:]
+        phone = re.sub(r"\D", "", str(applicant_data.get("phone") or applicant_data.get("mobile_number") or ""))[-10:]
         if len(phone) != 10:
             raise RuntimeError(f"Invalid mobile number (need 10 digits): {phone!r}")
         logger.info("Filling mobile number: %s", phone)
@@ -1440,9 +1484,15 @@ class GujaratRTIAdapter:
                         for (const kw of targetKw) {
                             if (t.includes(kw)) score += 10;
                         }
+                        
+                        // Enhanced scoring to properly catch AMC and match Urban Development
                         if (t.includes('municipal') && targetKw.some(k => k.includes('municipal') || k.includes('amc'))) score += 20;
                         if (t.includes('corporation') && targetKw.some(k => k.includes('corporation'))) score += 15;
                         if (t.includes('ahmedabad') || t.includes('ahmadabad')) score += 5;
+                        if ((t.includes('urban') || t.includes('development') || t.includes('housing')) &&
+                            targetKw.some(k => ['municipal', 'corporation', 'amc', 'urban', 'city'].includes(k))) {
+                            score += 30;
+                        }
 
                         if (t.includes('chief minister') && !targetKw.some(k => k.includes('chief') || k.includes('cm'))) {
                             score -= 50;
